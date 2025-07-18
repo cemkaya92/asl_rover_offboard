@@ -8,24 +8,16 @@ from casadi import SX, vertcat, horzcat, Function, diag, sin, cos, tan
 def build_casadi_model(params):
     """
     Builds the CasADi symbolic model of the rover.
-    The model now has 6 states and 2 control inputs (Wheel Speeds).
+    The model now has 3 states and 2 control inputs (Wheel Speeds).
     """
-    MASS = params.mass
-    ARM_LENGTH = params.arm_length
-    IX, IY, IZ = params.inertia
-    GRAV = params.gravity
+    HALF_WIDTH = 0.5*params.base_width # 2L is the total width of the vehicle base
+    WHEEL_RADIUS = params.wheel_radius
 
-    # === States: 6 states ===
+    # === States: 3 states ===
     # North - East - Down Coordinate Frame Convention is Used
-    # pos: x, y
-    # vel: vx, vy
-    # rpy: yaw
-    # omega: r (body-frame angular velocities)
-    x_pos = SX.sym('x_pos', 2)
-    x_vel = SX.sym('x_vel', 2)
-    x_rpy = SX.sym('x_rpy', 1)  
-    x_omega = SX.sym('x_omega', 1)
-    x = vertcat(x_pos, x_vel, x_rpy, x_omega)
+    # pose: x, y, yaw
+    x_pose = SX.sym('x_pose', 3)
+    x = vertcat(x_pose)
 
     # === Controls: 2 inputs ===
     # wl: Left wheel speed
@@ -33,8 +25,7 @@ def build_casadi_model(params):
     u = SX.sym('u', 2)
 
     # Extract states for clarity
-    yaw = x_rpy
-    r = x_omega
+    yaw = x_pose[2]
 
     # === Dynamics Equations ===
     # 1. Rotation matrix from body to world frame
@@ -46,33 +37,16 @@ def build_casadi_model(params):
     )
 
 
-    # 2. Translational Dynamics (in world frame)
-    # Acceleration = gravity + rotated body thrust
-    f_thrust = vertcat(0, 0, -u[0]) # Total thrust is along body z-axis
-    accel = vertcat(0, 0, GRAV) + (R @ f_thrust) / MASS
-    pos_dot = x_vel
-    vel_dot = accel
+    # 2. Translational Kinematics (in world frame)
+    x_vel = vertcat(0.5*WHEEL_RADIUS*(u[0]+u[1])*cψ,
+                    0.5*WHEEL_RADIUS*(u[0]+u[1])*sψ,
+                    0.5*WHEEL_RADIUS*(u[0]-u[1])/HALF_WIDTH)
 
-    # 3. Rotational Dynamics (in body frame)
-    # Euler's equations of motion
-    omega_dot = vertcat(
-        (u[1] - (IZ - IY) * q * r) / IX,
-        (u[2] - (IX - IZ) * p * r) / IY,
-        (u[3] - (IY - IX) * p * q) / IZ
-    )
+    pose_dot = x_vel
 
-    # 4. Attitude Kinematics
-    # Transformation from body rates (p,q,r) to Euler angle rates (d(rpy)/dt)
-    # Using tan(pitch) can lead to singularity at +/- 90 degrees
-    W_rpy = vertcat(
-        horzcat(1, sφ*tan(pitch), cφ*tan(pitch)),
-        horzcat(0, cφ, -sφ),
-        horzcat(0, sφ/cθ, cφ/cθ)
-    )
-    rpy_dot = W_rpy @ x_omega
 
     # Full state derivative vector
-    xdot = vertcat(pos_dot, vel_dot, rpy_dot, omega_dot)
+    xdot = vertcat(pose_dot)
 
     # CasADi function
     f = Function('f', [x, u], [xdot], ['x', 'u'], ['xdot'])

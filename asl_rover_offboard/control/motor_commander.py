@@ -3,10 +3,10 @@ from rclpy.node import Node
 import numpy as np
 from std_msgs.msg import Float32MultiArray
 from px4_msgs.msg import ActuatorMotors, OffboardControlMode, VehicleCommand, VehicleThrustSetpoint, VehicleTorqueSetpoint 
-from hydro_mpc.utils.vehicle_command_utils import create_arm_command, create_offboard_mode_command
+from asl_rover_offboard.utils.vehicle_command_utils import create_arm_command, create_offboard_mode_command
 
-from hydro_mpc.utils.param_loader import ParamLoader
-from hydro_mpc.control.control_allocator import ControlAllocator
+from asl_rover_offboard.utils.param_loader import ParamLoader
+# from asl_rover_offboard.control.control_allocator import ControlAllocator
 
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -16,50 +16,38 @@ class MotorCommander(Node):
     def __init__(self):
         super().__init__('motor_commander')
 
-        package_dir = get_package_share_directory('hydro_mpc')
+        package_dir = get_package_share_directory('asl_rover_offboard')
         
         # Declare param with default
-        self.declare_parameter('uav_param_file', 'crazyflie_param.yaml')
-        uav_param_file = self.get_parameter('uav_param_file').get_parameter_value().string_value
+        self.declare_parameter('vehicle_param_file', 'asl_rover_param.yaml')
+        vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
 
         sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', 'sitl_params.yaml')
-        uav_yaml_path = os.path.join(package_dir, 'config', 'uav_parameters', uav_param_file)
+        vehicle_yaml_path = os.path.join(package_dir, 'config', 'vehicle_parameters', vehicle_param_file)
 
         # Load parameters
         sitl_yaml = ParamLoader(sitl_yaml_path)
-        uav_yaml = ParamLoader(uav_yaml_path)
+        vehicle_yaml = ParamLoader(vehicle_yaml_path)
 
         # UAV parameters
-        self.uav_params = uav_yaml.get_uav_params()
+        self.vehicle_params = vehicle_yaml.get_vehicle_params()
 
         # pub / sub
         self.motor_pub = self.create_publisher(ActuatorMotors, sitl_yaml.get_topic("actuator_control_topic"), 10)
         self.offboard_ctrl_pub = self.create_publisher(OffboardControlMode, sitl_yaml.get_topic("offboard_control_topic"), 10)
         self.cmd_pub = self.create_publisher(VehicleCommand, sitl_yaml.get_topic("vehicle_command_topic"), 10)
-        self.thrust_pub = self.create_publisher(VehicleThrustSetpoint, sitl_yaml.get_topic("thrust_setpoints_topic"), 1)
-        self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, sitl_yaml.get_topic("torque_setpoints_topic"), 1)
+        # self.thrust_pub = self.create_publisher(VehicleThrustSetpoint, sitl_yaml.get_topic("thrust_setpoints_topic"), 1)
+        # self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, sitl_yaml.get_topic("torque_setpoints_topic"), 1)
         
         self.create_subscription(Float32MultiArray, sitl_yaml.get_topic("mpc_command_topic"), self.mpc_cmd_callback, 10)
 
         # initial states
-        self.latest_motor_cmd = [0.0, 0.0, 0.0, 0.0]
+        self.latest_motor_cmd = ActuatorMotors()
+        self.latest_motor_cmd.control = [0.0] * 12
 
-        self.latest_thrust_cmd = VehicleThrustSetpoint()
-        self.latest_torque_cmd = VehicleTorqueSetpoint()
-
-        self.normalized_torque_and_thrust = [0.0, 0.0, 0.0, 0.0]
         
         # static allocation matrices
-        self.rotor_velocities_to_torques_and_thrust, self.torques_and_thrust_to_rotor_velocities = \
-        ControlAllocator.compute_allocation_matrices(self.uav_params.num_of_arms, self.uav_params.thrust_constant, self.uav_params.moment_constant, self.uav_params.arm_length)
-
-        # Typical X-configuration
-        angles_deg = [135, 45, 315, 225]
-        spin_dirs = [-1, 1, -1, 1]
-
-        _, self.throttles_to_normalized_torques_and_thrust = ControlAllocator.generate_mixing_matrices(
-            1.0, 1.35, 1.5, angles_deg, spin_dirs
-        )
+        
 
         # self.get_logger().info("[mixing_matrix] =\n" + np.array2string(mixing_matrix, precision=10, suppress_small=True))
         # self.get_logger().info("[mixing_matrix_inv] =\n" + np.array2string(self.throttles_to_normalized_torques_and_thrust, precision=10, suppress_small=True))
@@ -71,16 +59,9 @@ class MotorCommander(Node):
         self.get_logger().info("MotorCommander with Offboard control started")
 
     def motor_command_timer_callback(self):
-        now_us = int(self.get_clock().now().nanoseconds / 1000)
 
-        motors_msg = ActuatorMotors()
-        motors_msg.timestamp = now_us
-        # #motors_msg.control = [0.90, 0.0, 0.0, 0.0] + [0.0] * 8
-        motors_msg.control[0:4] = self.latest_motor_cmd
-        # self.motor_pub.publish(motors_msg)
+        self.motor_pub.publish(self.latest_motor_cmd)
 
-        self.thrust_pub.publish(self.latest_thrust_cmd)
-        self.torque_pub.publish(self.latest_torque_cmd)
 
 
     def publish_offboard_control_mode(self):
@@ -93,8 +74,8 @@ class MotorCommander(Node):
         offboard_msg.acceleration = False
         offboard_msg.attitude = False
         offboard_msg.body_rate = False
-        offboard_msg.thrust_and_torque = True
-        offboard_msg.direct_actuator = False
+        offboard_msg.thrust_and_torque = False
+        offboard_msg.direct_actuator = True
         self.offboard_ctrl_pub.publish(offboard_msg)
 
         # Start Offboard + Arm only after receiving first valid control command
@@ -112,39 +93,16 @@ class MotorCommander(Node):
 
         now_us = int(self.get_clock().now().nanoseconds / 1000)
 
-        thrust_cmd = msg.data[0]
-        torque_cmd = msg.data[1:4]
-        self.get_logger().info(f"thrust= {thrust_cmd} | torque= {torque_cmd}")
-
-        torque_thrust_vec = np.concatenate((torque_cmd, [thrust_cmd])).reshape((4, 1))
-        omega_sq = self.torques_and_thrust_to_rotor_velocities @ torque_thrust_vec
-        omega_sq = np.clip(omega_sq, 0.0, None)  # Ensures non-negative values
-        # self.get_logger().info(f"torque_thrust_vec= {torque_thrust_vec}")
-        # self.get_logger().info(f"omega_sq= {omega_sq}")
-
-        omega = np.sqrt(omega_sq)
-
-        throttles = omega / self.uav_params.max_rotor_speed
-
-        # self.get_logger().info(f"omega= {omega} | throttles= {throttles}")
-
-        self.normalized_torque_and_thrust = self.throttles_to_normalized_torques_and_thrust @ throttles
-
-        self.get_logger().info(f"normalized_torque_and_thrust= {self.normalized_torque_and_thrust} ")
+        wl_cmd = msg.data[0]
+        wr_cmd = msg.data[1]
+        self.get_logger().info(f"omega_left= {wl_cmd} | omega_right= {wr_cmd}")
 
 
         # Prepare thrust message
-        self.latest_thrust_cmd.timestamp = now_us
-        self.latest_thrust_cmd.xyz[0] = 0.0
-        self.latest_thrust_cmd.xyz[1] = 0.0
-        self.latest_thrust_cmd.xyz[2] = -self.normalized_torque_and_thrust[3] 
+        self.latest_motor_cmd.timestamp = now_us
+        self.latest_motor_cmd.control[0] = wl_cmd / self.vehicle_params.max_wheel_speed
+        self.latest_motor_cmd.control[1] = wr_cmd / self.vehicle_params.max_wheel_speed
 
-
-        # Prepare torque message
-        self.latest_torque_cmd.timestamp = now_us
-        self.latest_torque_cmd.xyz[0] = self.normalized_torque_and_thrust[0]
-        self.latest_torque_cmd.xyz[1] = self.normalized_torque_and_thrust[1]
-        self.latest_torque_cmd.xyz[2] = self.normalized_torque_and_thrust[2]
 
 
 

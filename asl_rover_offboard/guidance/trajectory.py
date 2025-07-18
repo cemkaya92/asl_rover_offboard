@@ -85,18 +85,17 @@ def eval_traj(t):
     """
     # === Define Trajectory Parameters ===
     SIDE_LENGTH = 1.0
-    ALTITUDE = -3.0
     T_takeoff = 4.0  # Time for takeoff
     T_side = 5.0     # Time to fly one side of the square
     T_hover = 3.0    # Time to hover at each corner
 
     # === Define Corner Points ===
-    P_start = np.array([0., 0., 0.])
-    P1 = np.array([0., 0., ALTITUDE])
-    P2 = np.array([SIDE_LENGTH, 0., ALTITUDE])
-    P3 = np.array([SIDE_LENGTH, SIDE_LENGTH, ALTITUDE])
-    P4 = np.array([0., SIDE_LENGTH, ALTITUDE])
-    ZERO_VEL = np.zeros(3)
+    P_start = np.array([0., 0.])
+    P1 = np.array([0., 0.])
+    P2 = np.array([SIDE_LENGTH, 0.])
+    P3 = np.array([SIDE_LENGTH, SIDE_LENGTH])
+    P4 = np.array([0., SIDE_LENGTH])
+    ZERO_VEL = np.zeros(2)
 
     # === Timekeeping for each segment ===
     t_current = 0.0
