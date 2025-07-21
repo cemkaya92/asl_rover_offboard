@@ -1,4 +1,4 @@
-# hydro_mpc/core/first_order_filter.py
+# asl_rover_offboard/core/first_order_filter.py
 
 class FirstOrderFilter:
     def __init__(self, alpha: float = 0.2, initial_value: float = 0.0):

@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    mpc_parameters:
+        N: 15
+        horizon: 5
+        frequency: 50.0
+        Q: [0.001, 0.001, 0.01] # [x, y, psi]
+        R: [1.0, 1.0] # not used
+    

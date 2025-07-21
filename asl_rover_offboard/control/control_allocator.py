@@ -1,4 +1,4 @@
-# File: hydro_mpc/control/control_allocator.py
+# File: asl_rover_offboard/control/control_allocator.py
 
 import numpy as np
 

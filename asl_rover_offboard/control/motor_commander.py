@@ -32,6 +32,11 @@ class MotorCommander(Node):
         # UAV parameters
         self.vehicle_params = vehicle_yaml.get_vehicle_params()
 
+        self.L = 0.5 * self.vehicle_params.base_width
+        self.R = self.vehicle_params.wheel_radius
+        self.max_wheel_speed = self.vehicle_params.max_linear_speed / self.R
+        self.max_angular_speed_rad_s = self.vehicle_params.max_angular_speed * np.pi / 180.0 # rad/s
+
         # pub / sub
         self.motor_pub = self.create_publisher(ActuatorMotors, sitl_yaml.get_topic("actuator_control_topic"), 10)
         self.offboard_ctrl_pub = self.create_publisher(OffboardControlMode, sitl_yaml.get_topic("offboard_control_topic"), 10)
@@ -93,15 +98,22 @@ class MotorCommander(Node):
 
         now_us = int(self.get_clock().now().nanoseconds / 1000)
 
-        wl_cmd = msg.data[0]
-        wr_cmd = msg.data[1]
-        self.get_logger().info(f"omega_left= {wl_cmd} | omega_right= {wr_cmd}")
+        v_cmd =  np.clip(msg.data[0], -self.vehicle_params.max_linear_speed, self.vehicle_params.max_linear_speed)
+        omega_cmd =  np.clip(msg.data[1], -self.max_angular_speed_rad_s, self.max_angular_speed_rad_s) # 25.0*np.pi/180.0 #
+        omega_scaled = omega_cmd*(3.0 - 2.0 * np.abs(v_cmd)/self.vehicle_params.max_linear_speed)
+        self.get_logger().info(f"V= {v_cmd} | Omega= {omega_cmd} | OmegaScaled= {omega_scaled}")
+
+        wl_cmd = (v_cmd - omega_scaled * self.L) / self.R
+        wr_cmd = (v_cmd + omega_scaled * self.L) / self.R
 
 
         # Prepare thrust message
         self.latest_motor_cmd.timestamp = now_us
-        self.latest_motor_cmd.control[0] = wl_cmd / self.vehicle_params.max_wheel_speed
-        self.latest_motor_cmd.control[1] = wr_cmd / self.vehicle_params.max_wheel_speed
+        self.latest_motor_cmd.control[0] = self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
+        self.latest_motor_cmd.control[1] = self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
+
+        self.get_logger().info(f"wl_cmd= {wl_cmd} | wr_cmd= {wr_cmd} | max_wheel_speed= {self.max_wheel_speed}")
+        self.get_logger().info(f"norm_omega_left= {self.latest_motor_cmd.control[0]} | norm_omega_right= {self.latest_motor_cmd.control[1]}")
 
 
 

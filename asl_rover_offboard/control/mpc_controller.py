@@ -52,7 +52,7 @@ class MpcControllerNode(Node):
         # Controller parameters
         mpc_params = mpc_yaml.get_mpc_params()
         # Vehicle parameters
-        vehicle_params = uav_yaml.get_vehicle_params()
+        vehicle_params = vehicle_yaml.get_vehicle_params()
 
 
 
@@ -160,18 +160,26 @@ class MpcControllerNode(Node):
             return
         
         # Construct the 3-dimensional state vector
-        pose0 = np.concatenate([self.pos[0], self.pos[1], self.rpy[2]])
+        v_curr = np.linalg.norm(self.vel[:2])  # magnitude of [vx, vy]
+        x0 = np.array([self.pos[0], self.pos[1], self.rpy[2]])
 
         # Get reference trajectory point
         # x_ref, y_ref, psi_ref = eval_traj(self.t_sim)
-        x_ref, y_ref, psi_ref = 0.0, 0.0, 0.0
+        dt = 1.0 / 50.0
+
+        v_ref = 1.0
+        w_ref = 25.0 * np.pi / 180.0
+        psi_ref = self.rpy[2] + w_ref * dt
+        pos_x_ref = self.pos[0] + v_ref * np.cos(psi_ref) * dt
+        pos_y_ref = self.pos[1] + v_ref * np.sin(psi_ref) * dt
+        
 
 
         # Reference for attitude and angular rates is zero
-        pose_ref = np.concatenate([x_ref, y_ref, psi_ref])
+        x_ref = np.array([pos_x_ref, pos_y_ref, psi_ref, v_ref, w_ref])
 
         # Solve the MPC problem
-        u_mpc = self.mpc.solve(x0, x_ref)  # [wl, wr]
+        u_mpc = self.mpc.solve(x0, x_ref)  # [v, w]
 
         # u_mpc = np.array([0.0, 0.0, 0.0, 0.0])
 
@@ -183,12 +191,12 @@ class MpcControllerNode(Node):
         # pitch_command =  self.pitch_p_gain*(0.0 - self.rpy[1]) + self.pitch_d_gain * (0.0 - self.omega_body[1])          
         # yaw_command =  self.yaw_p_gain*(0.0 - self.rpy[2]) + self.yaw_d_gain * (0.0 - self.omega_body[2])
 
-        # self.get_logger().info(f"p_ref= {p_ref} | diff= {np.array(p_ref) - self.pos}")
+        #self.get_logger().info(f"x_ref= {x_ref} | diff= {np.array(x_ref) - x0}")
         # self.get_logger().info(f"v_ref= {p_ref} | diff= {np.array(v_ref) - self.vel}")
 
         # self.get_logger().info(f"roll= {self.rpy[0]*180/np.pi} | diff= {(0.0 - self.rpy[0])*180/np.pi}")
         # self.get_logger().info(f"pitch= {self.rpy[1]*180/np.pi} | diff= {(0.0 - self.rpy[1])*180/np.pi}")
-        # self.get_logger().info(f"yaw= {self.rpy[2]*180/np.pi} | diff= {(0.0 - self.rpy[2])*180/np.pi}")
+        self.get_logger().info(f"yaw_cmd= {psi_ref*180/np.pi} | diff= {(psi_ref - self.rpy[2])*180/np.pi}")
         #u_mpc[0] = (-np.sqrt(u_mpc[0] / (4 * KF_SIM))) / MAX_OMEGA_SIM
         # yaw_command = (yaw_command / self.max_torque)
 
@@ -203,7 +211,7 @@ class MpcControllerNode(Node):
         # u_mpc[2] = self.pitch_torque_filter.filter(pitch_command)
         # u_mpc[3] = self.yaw_torque_filter.filter(yaw_command)
 
-        self.logger.log(self.t_sim, self.pos, self.vel, self.rpy, p_ref, v_ref, u_mpc)
+        self.logger.log(self.t_sim, self.pos, self.vel, self.rpy, x_ref, u_mpc)
 
         # Normalize thrust by max_thrust
         #u_mpc[0] /= MAX_OMEGA_SIM

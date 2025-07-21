@@ -1,7 +1,7 @@
 import yaml
 import os
 
-from hydro_mpc.utils.param_types import UAVParams, MPCParams
+from asl_rover_offboard.utils.param_types import VehicleParams, MPCParams
 
 class ParamLoader:
     def __init__(self, yaml_path):
@@ -47,19 +47,18 @@ class ParamLoader:
             horizon=self.get("mpc_parameters", {}).get("horizon", 1.5),
             N=self.get("mpc_parameters", {}).get("N", 20),
             frequency=self.get("mpc_parameters", {}).get("frequency", 100.0),
-            Q=self.get("mpc_parameters", {}).get("Q", [40.0, 40.0, 40.0, 4.0, 4.0, 4.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.5]),
-            R=self.get("mpc_parameters", {}).get("R", [0.1, 1.0, 1.0, 1.0])
+            Q=self.get("mpc_parameters", {}).get("Q", [40.0, 40.0, 80.0]),
+            R=self.get("mpc_parameters", {}).get("R", [1.0, 1.0])
         )
     
-    def get_uav_params(self) -> UAVParams:
+    def get_vehicle_params(self) -> VehicleParams:
 
-        params = self.get("uav_parameters", {})
+        params = self.get("vehicle_parameters", {})
 
         required_fields = [
-            'mass', 'arm_length', 'gravity', 'input_scaling',
+            'mass', 'base_width', 'input_scaling', 'wheel_radius', 'max_linear_speed',
             ('inertia', 'x'), ('inertia', 'y'), ('inertia', 'z'),
-            'num_of_arms', 'moment_constant', 'thrust_constant',
-            'max_rotor_speed', 'PWM_MIN', 'PWM_MAX', 'zero_position_armed', 
+            'max_angular_speed', 'PWM_MIN', 'PWM_MAX', 'zero_position_armed', 
             ('omega_to_pwm_coefficient', 'x_2'), ('omega_to_pwm_coefficient', 'x_1'), ('omega_to_pwm_coefficient', 'x_0')
         ]
 
@@ -72,19 +71,17 @@ class ParamLoader:
                 if field not in params:
                     raise ValueError(f"Missing required parameter: '{field}' in YAML file.")
 
-        return UAVParams(
+        return VehicleParams(
             mass=params['mass'],
-            arm_length=params['arm_length'],
-            gravity=params['gravity'],
+            base_width=params['base_width'],
+            wheel_radius=params['wheel_radius'],
             inertia=[
                 params['inertia']['x'],
                 params['inertia']['y'],
                 params['inertia']['z']
             ],
-            num_of_arms=params['num_of_arms'],
-            moment_constant=params['moment_constant'],
-            thrust_constant=params['thrust_constant'],
-            max_rotor_speed=params['max_rotor_speed'],
+            max_linear_speed=params['max_linear_speed'],
+            max_angular_speed=params['max_angular_speed'],
             PWM_MIN=params['PWM_MIN'],
             PWM_MAX=params['PWM_MAX'],
             input_scaling=params['input_scaling'],

@@ -20,8 +20,8 @@ def build_casadi_model(params):
     x = vertcat(x_pose)
 
     # === Controls: 2 inputs ===
-    # wl: Left wheel speed
-    # wr: Right wheel speed 
+    # v: linear speed
+    # omega: angular speed 
     u = SX.sym('u', 2)
 
     # Extract states for clarity
@@ -38,9 +38,9 @@ def build_casadi_model(params):
 
 
     # 2. Translational Kinematics (in world frame)
-    x_vel = vertcat(0.5*WHEEL_RADIUS*(u[0]+u[1])*cψ,
-                    0.5*WHEEL_RADIUS*(u[0]+u[1])*sψ,
-                    0.5*WHEEL_RADIUS*(u[0]-u[1])/HALF_WIDTH)
+    x_vel = vertcat(u[0]*cψ,
+                    u[0]*sψ,
+                    u[1])
 
     pose_dot = x_vel
 

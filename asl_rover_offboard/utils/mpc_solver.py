@@ -4,24 +4,27 @@
 import numpy as np
 from casadi import SX, vertcat, diag, nlpsol
 
-from hydro_mpc.model.dynamics_model import build_casadi_model
+from asl_rover_offboard.model.dynamics_model import build_casadi_model
 
 
 # ==================== MPC Solver Class ====================
 class MPCSolver:
-    def __init__(self, mpc_params, uav_params, debug=False):
+    def __init__(self, mpc_params, vehicle_params, debug=False):
         self.N = mpc_params.N
         self.Tf = mpc_params.horizon
         self.dt = mpc_params.horizon / mpc_params.N
         self.debug = debug
 
+        self.Qv = 1.0
+        self.Qomega = 1.0
+
         # === Load CasADi dynamic model with UAV params ===
-        self.f_model, self.NX, self.NU = build_casadi_model(uav_params)
+        self.f_model, self.NX, self.NU = build_casadi_model(vehicle_params)
 
         # === Define optimization variables ===
         X = SX.sym('X', self.NX, self.N + 1) # States over the horizon
         U = SX.sym('U', self.NU, self.N)     # Controls over the horizon
-        P = SX.sym('P', 2 * self.NX)    # Parameters (initial state x0, reference xref)
+        P = SX.sym('P', 2 * self.NX + 2)    # Parameters (initial state x0, reference xref)  +2 for v_ref and omega_ref
 
         # Extract initial state and reference from parameters
         x0_param = P[0:self.NX]
@@ -30,11 +33,8 @@ class MPCSolver:
         # Cost Function (penalizes state error and control effort)
         # Tuning these matrices is crucial for performance
         Q = diag(mpc_params.Q)  
-                        # Position error
-                        # Velocity error
-                        # Attitude error
-                        # Angular rate error
-        R = diag(mpc_params.R) # Control effort (Thrust, Torques)
+                        # Pose error [x, y, psi]
+        R = diag(mpc_params.R) # Control effort (v, omega)
         cost = 0
         
         # Dynamics Constraints
@@ -42,16 +42,20 @@ class MPCSolver:
         g.append(X[:, 0] - x0_param) # Initial state constraint
 
         for k in range(self.N):
-            # Add to cost
-            cost += (X[:,k] - xref_param).T @ Q @ (X[:,k] - xref_param)
-            cost += U[:,k].T @ R @ U[:,k]
+            # Add to state cost 
+            cost += (X[:,k] - xref_param[0:3]).T @ Q @ (X[:,k] - xref_param[0:3])
+            # Add reference velocity cost
+            cost += self.Qv * (U[0, k] - xref_param[3])**2
+            cost += self.Qomega * (U[1, k] - xref_param[4])**2
+
+            #cost += U[:,k].T @ R @ U[:,k]  
             
             # Add dynamics constraint (Explicit Euler integration)
             x_next_pred = X[:,k] + self.dt * self.f_model(X[:,k], U[:,k])
             g.append(X[:,k+1] - x_next_pred)
         
         # Final state cost
-        cost += (X[:,self.N] - xref_param).T @ Q @ (X[:,self.N] - xref_param)
+        cost += (X[:, self.N] - xref_param[0:3]).T @ Q @ (X[:, self.N] - xref_param[0:3])
 
         # NLP problem setup
         g = vertcat(*g)

@@ -16,7 +16,7 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('asl_rover_offboard/launch/*.py')),
         (os.path.join('share', package_name, 'config', 'sitl'), glob('asl_rover_offboard/config/sitl/*.yaml')),
         (os.path.join('share', package_name, 'config', 'controller'), glob('asl_rover_offboard/config/controller/*.yaml')),
-        (os.path.join('share', package_name, 'config', 'uav_parameters'), glob('asl_rover_offboard/config/uav_parameters/*.yaml')),
+        (os.path.join('share', package_name, 'config', 'vehicle_parameters'), glob('asl_rover_offboard/config/vehicle_parameters/*.yaml'))
     ],
     install_requires=['setuptools'],
     zip_safe=True,
