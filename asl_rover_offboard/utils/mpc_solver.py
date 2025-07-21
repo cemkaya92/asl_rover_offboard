@@ -3,6 +3,7 @@
 
 import numpy as np
 from casadi import SX, vertcat, diag, nlpsol
+import casadi as ca
 
 from asl_rover_offboard.model.dynamics_model import build_casadi_model
 
@@ -16,7 +17,7 @@ class MPCSolver:
         self.debug = debug
 
         self.Qv = 1.0
-        self.Qomega = 1.0
+        self.Qomega = 0.5
 
         # === Load CasADi dynamic model with UAV params ===
         self.f_model, self.NX, self.NU = build_casadi_model(vehicle_params)
@@ -42,8 +43,17 @@ class MPCSolver:
         g.append(X[:, 0] - x0_param) # Initial state constraint
 
         for k in range(self.N):
-            # Add to state cost 
-            cost += (X[:,k] - xref_param[0:3]).T @ Q @ (X[:,k] - xref_param[0:3])
+
+            # Position error (x, y)
+            pos_err = X[0:2, k] - xref_param[0:2]
+
+            # Heading error (wrapped)
+            psi_err = self.angle_diff(X[2, k], xref_param[2])
+
+            # Compute cost
+            cost += pos_err.T @ Q[0:2,0:2] @ pos_err
+            cost += psi_err * Q[2,2] * psi_err
+
             # Add reference velocity cost
             cost += self.Qv * (U[0, k] - xref_param[3])**2
             cost += self.Qomega * (U[1, k] - xref_param[4])**2
@@ -93,3 +103,9 @@ class MPCSolver:
             print(f"[MPC] Control output: {np.round(u0, 3)}")
 
         return u0
+
+    def angle_diff(self,a, b):
+        """
+        CasADi-compatible wrapped angle difference in [-pi, pi]
+        """
+        return ca.atan2(ca.sin(a - b), ca.cos(a - b))

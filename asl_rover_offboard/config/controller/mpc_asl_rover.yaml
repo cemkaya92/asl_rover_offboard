@@ -4,6 +4,6 @@
         N: 15
         horizon: 5
         frequency: 50.0
-        Q: [0.001, 0.001, 0.01] # [x, y, psi]
+        Q: [0.2, 0.2, 0.1] # [x, y, psi]
         R: [1.0, 1.0] # not used
     

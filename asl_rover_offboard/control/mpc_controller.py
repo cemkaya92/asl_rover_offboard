@@ -160,23 +160,30 @@ class MpcControllerNode(Node):
             return
         
         # Construct the 3-dimensional state vector
-        v_curr = np.linalg.norm(self.vel[:2])  # magnitude of [vx, vy]
+        # v_curr = np.linalg.norm(self.vel[:2])  # magnitude of [vx, vy]
         x0 = np.array([self.pos[0], self.pos[1], self.rpy[2]])
 
         # Get reference trajectory point
-        # x_ref, y_ref, psi_ref = eval_traj(self.t_sim)
-        dt = 1.0 / 50.0
+        # dt = 1.0 / 50.0
+        # v_ref = 1.0
+        # w_ref = 25.0 * np.pi / 180.0
+        # psi_ref = self.rpy[2] + w_ref * dt
+        # pos_x_ref = self.pos[0] + v_ref * np.cos(psi_ref) * dt
+        # pos_y_ref = self.pos[1] + v_ref * np.sin(psi_ref) * dt
+        # x_ref = np.array([pos_x_ref, pos_y_ref, psi_ref, v_ref, w_ref])
 
-        v_ref = 1.0
-        w_ref = 25.0 * np.pi / 180.0
-        psi_ref = self.rpy[2] + w_ref * dt
-        pos_x_ref = self.pos[0] + v_ref * np.cos(psi_ref) * dt
-        pos_y_ref = self.pos[1] + v_ref * np.sin(psi_ref) * dt
+        pos_ref, vel_ref = eval_traj(self.t_sim,x0[0:2])
         
+        # Compute velocity and heading references from the trajectory
+        vx, vy = vel_ref[0], vel_ref[1]
+
+        psi_ref = np.arctan2(vy, vx)
+        v_ref = np.sqrt(vx**2 + vy**2)
+        psi_dot_ref = 1.0 * self.angle_diff(psi_ref , self.rpy[2])
 
 
         # Reference for attitude and angular rates is zero
-        x_ref = np.array([pos_x_ref, pos_y_ref, psi_ref, v_ref, w_ref])
+        x_ref = np.array([pos_ref[0], pos_ref[1], psi_ref, v_ref, psi_dot_ref])
 
         # Solve the MPC problem
         u_mpc = self.mpc.solve(x0, x_ref)  # [v, w]
@@ -191,7 +198,8 @@ class MpcControllerNode(Node):
         # pitch_command =  self.pitch_p_gain*(0.0 - self.rpy[1]) + self.pitch_d_gain * (0.0 - self.omega_body[1])          
         # yaw_command =  self.yaw_p_gain*(0.0 - self.rpy[2]) + self.yaw_d_gain * (0.0 - self.omega_body[2])
 
-        #self.get_logger().info(f"x_ref= {x_ref} | diff= {np.array(x_ref) - x0}")
+        self.get_logger().info(f"x_ref= {x_ref[0]} | diff= {x_ref[0] - x0[0]}")
+        self.get_logger().info(f"y_ref= {x_ref[1]} | diff= {x_ref[1] - x0[1]}")
         # self.get_logger().info(f"v_ref= {p_ref} | diff= {np.array(v_ref) - self.vel}")
 
         # self.get_logger().info(f"roll= {self.rpy[0]*180/np.pi} | diff= {(0.0 - self.rpy[0])*180/np.pi}")
@@ -249,6 +257,13 @@ class MpcControllerNode(Node):
         # self.get_logger().info(f"x_ref={x_ref}")
         # self.get_logger().info(f"x_dif={x_ref-x0}")
 
+    def angle_diff(self, a, b):
+        """
+        Compute the wrapped difference between two angles in radians.
+        Both a and b can be scalars or numpy arrays.
+        Returns value in [-pi, pi]
+        """
+        return (a - b + np.pi) % (2 * np.pi) - np.pi
 
 def main(args=None):
     rclpy.init(args=args)

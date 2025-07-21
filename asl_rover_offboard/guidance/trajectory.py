@@ -3,157 +3,62 @@
 import numpy as np
 
 # ==================== Trajectory Generation ====================
-def min_jerk(t, T, p0, pf):
-    """
-    Generates a minimum-jerk trajectory segment.
-    Quintic polynomial interpolation for position and velocity.
-    """
-    # Ensure time is within the segment duration
-    tau = np.clip(t/T, 0, 1)
-    # Quintic polynomial for smooth position
-    pos = p0 + (pf - p0) * (10*tau**3 - 15*tau**4 + 6*tau**5)
-    # Derivative for smooth velocity
-    vel = (pf - p0) * (30*tau**2 - 60*tau**3 + 30*tau**4) / T
-    return pos, vel
 
-def eval_traj_docking(t):
+def eval_traj(t,pos):
     """
-    Generates a trajectory to take off and dock at a target.
-    The trajectory consists of:
-    1. Takeoff to a safe altitude.
-    2. Traverse to a staging point above the target.
-    3. A slow, final descent onto the docking target.
+    Generates an infinity 
     """
     # === Define Trajectory Parameters ===
-    CRUISING_ALTITUDE = -3.0
-    DOCK_TARGET = np.array([2.0, 2.0, -0.30])
+    X_RADIUS = 5.0
+    Y_RADIUS = 15.0  
+    OMEGA = 10.0 * np.pi / 180.0     # angular speed rad/s
 
-    T_takeoff = 4.0      # Time to climb to cruising altitude
-    T_hover_initial = 3.0  # Time to stabilize after takeoff
-    T_traverse = 6.0     # Time to fly to the staging point
-    T_hover_staging = 4.0  # Time to stabilize before final descent
-    T_descent = 5.0      # Time for slow final descent
+    # === Initialize the current position ===
+    if not hasattr(eval_traj, "pos0"):
+        eval_traj.pos0 = pos  # Store first t as offset
+    
 
-    # === Define Key Points in the Trajectory ===
-    P_ground = np.array([0., 0., 0.])
-    P_takeoff_hover = np.array([0., 0., CRUISING_ALTITUDE])
-    P_staging = np.array([DOCK_TARGET[0], DOCK_TARGET[1], CRUISING_ALTITUDE])
-    P_dock = DOCK_TARGET
-    ZERO_VEL = np.zeros(3)
+    return figure8_trajectory(t,X_RADIUS,Y_RADIUS,OMEGA)
 
-    # === Timekeeping for each segment ===
-    t_current = 0.0
 
-    # --- 1. Takeoff (Ground -> Cruising Altitude) ---
-    t_segment_end = t_current + T_takeoff
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_takeoff, P_ground, P_takeoff_hover)
-    t_current = t_segment_end
-
-    # --- 2. Initial Hover ---
-    t_segment_end = t_current + T_hover_initial
-    if t <= t_segment_end:
-        return P_takeoff_hover, ZERO_VEL
-    t_current = t_segment_end
-
-    # --- 3. Traverse (Takeoff Point -> Staging Point) ---
-    t_segment_end = t_current + T_traverse
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_traverse, P_takeoff_hover, P_staging)
-    t_current = t_segment_end
-
-    # --- 4. Hover at Staging Point (above target) ---
-    t_segment_end = t_current + T_hover_staging
-    if t <= t_segment_end:
-        return P_staging, ZERO_VEL
-    t_current = t_segment_end
-
-    # --- 5. Final Descent (Staging Point -> Docking Target) ---
-    t_segment_end = t_current + T_descent
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_descent, P_staging, P_dock)
-    t_current = t_segment_end
-
-    # --- 6. Docked (Hold position at target) ---
-    # After the sequence is complete, hover at the dock position indefinitely.
-    return P_dock, ZERO_VEL
-
-def eval_traj(t):
+def figure8_trajectory(t, a=1.0, b=1.0, omega=1.0):
     """
-    Generates a 1x1 meter square trajectory in the XY plane at Z=1m.
-    Includes hover periods at each corner to ensure stability.
+    Returns position and velocity for a figure-8 trajectory on the XY plane.
+    
+    Parameters:
+        t (float or array): Time
+        a (float): Amplitude in X direction
+        b (float): Amplitude in Y direction
+        omega (float): Angular frequency
+
+    Returns:
+        pos, vel: arrays of x and y positions and velocities
     """
-    # === Define Trajectory Parameters ===
-    SIDE_LENGTH = 1.0
-    T_takeoff = 4.0  # Time for takeoff
-    T_side = 5.0     # Time to fly one side of the square
-    T_hover = 3.0    # Time to hover at each corner
+    x = eval_traj.pos0[0] + a * np.sin(omega * t)
+    y = eval_traj.pos0[1] + b * np.sin(2 * omega * t)
 
-    # === Define Corner Points ===
-    P_start = np.array([0., 0.])
-    P1 = np.array([0., 0.])
-    P2 = np.array([SIDE_LENGTH, 0.])
-    P3 = np.array([SIDE_LENGTH, SIDE_LENGTH])
-    P4 = np.array([0., SIDE_LENGTH])
-    ZERO_VEL = np.zeros(2)
+    x_dot = a * omega * np.cos(omega * t)
+    y_dot = 2 * b * omega * np.cos(2 * omega * t)
 
-    # === Timekeeping for each segment ===
-    t_current = 0.0
+    return np.array([x,y]), np.array([x_dot,y_dot])
 
-    # --- 1. Takeoff ---
-    t_segment_end = t_current + T_takeoff
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_takeoff, P_start, P1)
-    t_current = t_segment_end
+def elliptical_trajectory(t, a=1.0, b=1.0, omega=1.0):
+    """
+    Returns position and velocity for a elliptical trajectory on the XY plane.
+    
+    Parameters:
+        t (float or array): Time
+        a (float): Amplitude in X direction
+        b (float): Amplitude in Y direction
+        omega (float): Angular frequency
 
-    # --- 2. Hover at Corner 1 ---
-    t_segment_end = t_current + T_hover
-    if t <= t_segment_end:
-        return P1, ZERO_VEL
-    t_current = t_segment_end
+    Returns:
+        pos, vel: arrays of x and y positions and velocities
+    """
+    x = eval_traj.pos0[0] + a * np.cos(omega * t)
+    y = eval_traj.pos0[1] + b * np.sin(omega * t)
 
-    # --- 3. Fly Side 1 (P1 -> P2) ---
-    t_segment_end = t_current + T_side
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_side, P1, P2)
-    t_current = t_segment_end
+    x_dot = - a * omega * np.sin(omega * t)
+    y_dot =   b * omega * np.cos(omega * t)
 
-    # --- 4. Hover at Corner 2 ---
-    t_segment_end = t_current + T_hover
-    if t <= t_segment_end:
-        return P2, ZERO_VEL
-    t_current = t_segment_end
-
-    # --- 5. Fly Side 2 (P2 -> P3) ---
-    t_segment_end = t_current + T_side
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_side, P2, P3)
-    t_current = t_segment_end
-
-    # --- 6. Hover at Corner 3 ---
-    t_segment_end = t_current + T_hover
-    if t <= t_segment_end:
-        return P3, ZERO_VEL
-    t_current = t_segment_end
-
-    # --- 7. Fly Side 3 (P3 -> P4) ---
-    t_segment_end = t_current + T_side
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_side, P3, P4)
-    t_current = t_segment_end
-
-    # --- 8. Hover at Corner 4 ---
-    t_segment_end = t_current + T_hover
-    if t <= t_segment_end:
-        return P4, ZERO_VEL
-    t_current = t_segment_end
-
-    # --- 9. Fly Side 4 (P4 -> P1, return to start) ---
-    t_segment_end = t_current + T_side
-    if t <= t_segment_end:
-        return min_jerk(t - t_current, T_side, P4, P1)
-    t_current = t_segment_end
-
-    # --- 10. Final Hover ---
-    # After completing the square, just hover at the starting corner indefinitely
-    return P1, ZERO_VEL
+    return np.array([x,y]), np.array([x_dot,y_dot])
