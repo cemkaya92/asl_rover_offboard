@@ -6,7 +6,7 @@ package_name = 'asl_rover_offboard'
 
 setup(
     name=package_name,
-    version='0.1.0',
+    version='0.2.0',
     packages=find_packages(include=[package_name, f'{package_name}.*']),
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -22,13 +22,13 @@ setup(
     zip_safe=True,
     maintainer='asl-simulation',
     maintainer_email='uluhancem.kaya@uta.edu',
-    description='ROS 2 PX4 control system with MPC and Offboard modes.',
+    description='ROS 2 PX4 control system with Backstepping Control and Offboard modes.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'motor_commander = asl_rover_offboard.control.motor_commander:main',
-            'mpc_controller = asl_rover_offboard.control.mpc_controller:main',
+            'backstepping_controller = asl_rover_offboard.control.backstepping_controller:main',
         ],
     },
 )

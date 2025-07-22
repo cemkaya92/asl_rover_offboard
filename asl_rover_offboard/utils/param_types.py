@@ -18,9 +18,8 @@ class VehicleParams:
     zero_position_armed: float
 
 @dataclass
-class MPCParams:
-    horizon: float
-    N: int
+class ControlParams:
     frequency: float
-    Q: List[float]  # length should be NX (e.g., 12)
-    R: List[float]  # length should be NU (e.g., 4)
+    k1: float
+    k2: float
+    k3: float

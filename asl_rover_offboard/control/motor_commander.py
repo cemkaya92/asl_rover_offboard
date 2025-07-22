@@ -44,7 +44,7 @@ class MotorCommander(Node):
         # self.thrust_pub = self.create_publisher(VehicleThrustSetpoint, sitl_yaml.get_topic("thrust_setpoints_topic"), 1)
         # self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, sitl_yaml.get_topic("torque_setpoints_topic"), 1)
         
-        self.create_subscription(Float32MultiArray, sitl_yaml.get_topic("mpc_command_topic"), self.mpc_cmd_callback, 10)
+        self.create_subscription(Float32MultiArray, sitl_yaml.get_topic("control_command_topic"), self.control_cmd_callback, 10)
 
         # initial states
         self.latest_motor_cmd = ActuatorMotors()
@@ -94,7 +94,7 @@ class MotorCommander(Node):
     
         
         
-    def mpc_cmd_callback(self, msg):
+    def control_cmd_callback(self, msg):
 
         now_us = int(self.get_clock().now().nanoseconds / 1000)
 

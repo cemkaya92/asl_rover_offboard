@@ -1,0 +1,8 @@
+/**:
+  ros__parameters:
+    control_parameters:
+        frequency: 50.0
+        k1: 2.0
+        k2: 0.5
+        k3: 2.5
+    

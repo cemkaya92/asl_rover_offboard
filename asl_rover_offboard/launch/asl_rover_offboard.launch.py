@@ -23,7 +23,7 @@ mpc_params_path = PathJoinSubstitution([
     FindPackageShare('asl_rover_offboard'),
     'config',
     'controller',
-    'mpc_asl_rover.yaml'
+    'controller_asl_rover.yaml'
 ])
 
 def generate_launch_description():
@@ -34,9 +34,9 @@ def generate_launch_description():
             description='Vehicle param file inside config/vehicle_parameters/'
         ),
         DeclareLaunchArgument(
-            'mpc_param_file',
-            default_value='mpc_asl_rover.yaml',
-            description='MPC parameter file inside config/controller/'
+            'controller_param_file',
+            default_value='controller_asl_rover.yaml',
+            description='Controller parameter file inside config/controller/'
         ),
 
         Node(
@@ -50,12 +50,12 @@ def generate_launch_description():
         ),
         Node(
             package='asl_rover_offboard',
-            executable='mpc_controller',
-            name='mpc_controller',
+            executable='backstepping_controller',
+            name='backstepping_controller',
             output='screen',
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
-                'mpc_param_file': LaunchConfiguration('mpc_param_file')
+                'controller_param_file': LaunchConfiguration('controller_param_file')
             }]
         )
     ])

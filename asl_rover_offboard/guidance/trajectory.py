@@ -10,15 +10,15 @@ def eval_traj(t,pos):
     """
     # === Define Trajectory Parameters ===
     X_RADIUS = 5.0
-    Y_RADIUS = 15.0  
-    OMEGA = 10.0 * np.pi / 180.0     # angular speed rad/s
+    Y_RADIUS = 5.0  
+    OMEGA = 5.0 * np.pi / 180.0     # angular speed rad/s
 
     # === Initialize the current position ===
     if not hasattr(eval_traj, "pos0"):
         eval_traj.pos0 = pos  # Store first t as offset
     
 
-    return figure8_trajectory(t,X_RADIUS,Y_RADIUS,OMEGA)
+    return elliptical_trajectory(t,X_RADIUS,Y_RADIUS,OMEGA)
 
 
 def figure8_trajectory(t, a=1.0, b=1.0, omega=1.0):

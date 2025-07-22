@@ -6,7 +6,7 @@ import numpy as np
 from std_msgs.msg import Float32MultiArray
 from px4_msgs.msg import VehicleOdometry, TimesyncStatus
 
-from asl_rover_offboard.utils.mpc_solver import MPCSolver
+
 from asl_rover_offboard.guidance.trajectory import eval_traj
 from asl_rover_offboard.utils.first_order_filter import FirstOrderFilter
 
@@ -22,35 +22,35 @@ import signal
 
 
 
-class MpcControllerNode(Node):
+class ControllerNode(Node):
     def __init__(self):
-        super().__init__('mpc_controller_node')
+        super().__init__('controller_node')
         
         self.declare_parameter('vehicle_param_file', 'asl_rover_param.yaml')
-        self.declare_parameter('mpc_param_file', 'mpc_asl_rover.yaml')
+        self.declare_parameter('controller_param_file', 'controller_asl_rover.yaml')
 
         vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
-        mpc_param_file = self.get_parameter('mpc_param_file').get_parameter_value().string_value
+        controller_param_file = self.get_parameter('controller_param_file').get_parameter_value().string_value
 
         package_dir = get_package_share_directory('asl_rover_offboard')
         
         sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', 'sitl_params.yaml')
         vehicle_yaml_path = os.path.join(package_dir, 'config', 'vehicle_parameters', vehicle_param_file)
-        mpc_yaml_path = os.path.join(package_dir, 'config', 'controller', mpc_param_file)
+        controller_yaml_path = os.path.join(package_dir, 'config', 'controller', controller_param_file)
 
 
         # Load parameters
         sitl_yaml = ParamLoader(sitl_yaml_path)
         vehicle_yaml = ParamLoader(vehicle_yaml_path)
-        mpc_yaml = ParamLoader(mpc_yaml_path)
+        controller_yaml = ParamLoader(controller_yaml_path)
 
         # Topic names
         odom_topic = sitl_yaml.get_topic("odometry_topic")
         timesync_topic = sitl_yaml.get_topic("status_topic")
-        mpc_cmd_topic = sitl_yaml.get_topic("mpc_command_topic")
+        control_cmd_topic = sitl_yaml.get_topic("control_command_topic")
 
         # Controller parameters
-        mpc_params = mpc_yaml.get_mpc_params()
+        self.control_params = controller_yaml.get_control_params()
         # Vehicle parameters
         vehicle_params = vehicle_yaml.get_vehicle_params()
 
@@ -76,7 +76,7 @@ class MpcControllerNode(Node):
         #self.pub_motor = self.create_publisher(ActuatorMotors, '/fmu/in/actuator_motors', 10)
         self.motor_cmd_pub = self.create_publisher(
             Float32MultiArray, 
-            mpc_cmd_topic, 
+            control_cmd_topic, 
             10)
                         
 
@@ -102,11 +102,10 @@ class MpcControllerNode(Node):
         # Data logging
         self.logger = Logger()
         
-        # MPC + Timer
-        self.mpc = MPCSolver(mpc_params, vehicle_params, debug=False)
-        self.timer_mpc = self.create_timer(1.0 / mpc_params.frequency, self.mpc_loop)  # 100 Hz
 
-        self.get_logger().info("MPC Controller Node initialized.")
+        self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  # 100 Hz
+
+        self.get_logger().info("Controller Node initialized.")
 
 
     def _timing(self, stamp_us):
@@ -151,9 +150,9 @@ class MpcControllerNode(Node):
     def sync_callback(self, msg):
         self.px4_timestamp = msg.timestamp
 
-    def mpc_loop(self):
+    def control_loop(self):
         """
-        Runs at a slower rate, solving the optimization problem.
+        Runs at
         """
         if not self.odom_ready:
             self.get_logger().warn("Waiting for odometry...")
@@ -182,24 +181,23 @@ class MpcControllerNode(Node):
         psi_dot_ref = 1.0 * self.angle_diff(psi_ref , self.rpy[2])
 
 
-        # Reference for attitude and angular rates is zero
-        x_ref = np.array([pos_ref[0], pos_ref[1], psi_ref, v_ref, psi_dot_ref])
+        # Construct error terms
+        sin_theta = np.sin(self.rpy[2])
+        cos_theta = np.cos(self.rpy[2])
 
-        # Solve the MPC problem
-        u_mpc = self.mpc.solve(x0, x_ref)  # [v, w]
+        err_x =  cos_theta*(pos_ref[0]-self.pos[0]) + sin_theta*(pos_ref[1]-self.pos[1])
+        err_y = -sin_theta*(pos_ref[0]-self.pos[0]) + cos_theta*(pos_ref[1]-self.pos[1])
+        err_theta = psi_ref - self.rpy[2]
 
-        # u_mpc = np.array([0.0, 0.0, 0.0, 0.0])
+        # Control Law for  [v, w]s
+        v_cmd     = v_ref*np.cos(err_theta) + self.control_params.k1*err_x
+        omega_cmd = psi_dot_ref + self.control_params.k2*err_y + self.control_params.k3*np.sin(err_theta)
 
-        #u_mpc[1] = -u_mpc[1]
-        # u_mpc[2] = 0.0
-        # u_mpc[3] = 0.0
-                         
-        # roll_command =  self.roll_p_gain*(0.0 - self.rpy[0]) + self.roll_d_gain * (0.0 - self.omega_body[0])
-        # pitch_command =  self.pitch_p_gain*(0.0 - self.rpy[1]) + self.pitch_d_gain * (0.0 - self.omega_body[1])          
-        # yaw_command =  self.yaw_p_gain*(0.0 - self.rpy[2]) + self.yaw_d_gain * (0.0 - self.omega_body[2])
+        u_input = np.array([v_cmd, omega_cmd])
 
-        self.get_logger().info(f"x_ref= {x_ref[0]} | diff= {x_ref[0] - x0[0]}")
-        self.get_logger().info(f"y_ref= {x_ref[1]} | diff= {x_ref[1] - x0[1]}")
+
+        self.get_logger().info(f"x_ref= {pos_ref[0]} | diff= {pos_ref[0] - x0[0]}")
+        self.get_logger().info(f"y_ref= {pos_ref[1]} | diff= {pos_ref[1] - x0[1]}")
         # self.get_logger().info(f"v_ref= {p_ref} | diff= {np.array(v_ref) - self.vel}")
 
         # self.get_logger().info(f"roll= {self.rpy[0]*180/np.pi} | diff= {(0.0 - self.rpy[0])*180/np.pi}")
@@ -212,44 +210,16 @@ class MpcControllerNode(Node):
         # pitch_command = (pitch_command / self.max_torque)
 
         # thrust_command = (-np.sqrt(0.027*9.8066 / (4 * KF_SIM)) / MAX_OMEGA_SIM )
-    
 
-        # u_mpc[0] = self.thrust_filter.filter(thrust_command)
-        # u_mpc[1] = self.roll_torque_filter.filter(roll_command)
-        # u_mpc[2] = self.pitch_torque_filter.filter(pitch_command)
-        # u_mpc[3] = self.yaw_torque_filter.filter(yaw_command)
+        # self.logger.log(self.t_sim, self.pos, self.vel, self.rpy, np.array([]), np.array([v_cmd,omega_cmd]))
 
-        self.logger.log(self.t_sim, self.pos, self.vel, self.rpy, x_ref, u_mpc)
-
-        # Normalize thrust by max_thrust
-        #u_mpc[0] /= MAX_OMEGA_SIM
-        # Normalize torques by max_thrust
-        # u_mpc[1] /= self.max_torque
-        # u_mpc[2] /= self.max_torque
-        # u_mpc[3] /= self.max_torque_yaw
-
-        # u_mpc[1] = 0*u_mpc[1]
-        # u_mpc[2] = 0*u_mpc[2]
-        # u_mpc[3] = 0*u_mpc[3]
-
-        # Clip all values between -1 and 1
-        # u_mpc = np.clip(u_mpc, -1.0, 1.0)
-
-        #u_mpc = np.array([-0.027*9.81, 0.0, 0.0, 0.0])
-        #u_mpc = np.array([0.0, 0.0, 0.0, -0.0001])
 
         # Publish
         msg = Float32MultiArray()
-        msg.data = u_mpc.tolist()
+        msg.data = u_input.tolist()
         self.motor_cmd_pub.publish(msg)
 
-        # msg = VehicleRatesSetpoint()
-        # msg.timestamp = self.px4_timestamp
-        # msg.roll = 0.0
-        # msg.pitch = 0.0
-        # msg.yaw = 0.0
-        # msg.thrust_body = [0.0,0.0,-0.5]
-        #self.rates_cmd_pub.publish(msg)
+   
 
         #self.get_logger().info(f"t={self.t_sim:.2f} | pos={self.pos.round(2)} | u={np.round(u_mpc, 4)}")
         # self.get_logger().info(f"t={self.t_sim:.2f} | u={np.round(u_mpc, 4)}")
@@ -267,11 +237,11 @@ class MpcControllerNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MpcControllerNode()
+    node = ControllerNode()
 
     def signal_handler(sig, frame):
         node.get_logger().info("Shutdown signal received. Cleaning up...")
-        node.logger.plot_logs()
+        # node.logger.plot_logs()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -1,7 +1,7 @@
 import yaml
 import os
 
-from asl_rover_offboard.utils.param_types import VehicleParams, MPCParams
+from asl_rover_offboard.utils.param_types import VehicleParams, ControlParams
 
 class ParamLoader:
     def __init__(self, yaml_path):
@@ -41,14 +41,13 @@ class ParamLoader:
         """Optional helper if using control_gains block."""
         return self.get("control_gains", {})
 
-    def get_mpc_params(self) -> MPCParams:
+    def get_control_params(self) -> ControlParams:
 
-        return MPCParams(
-            horizon=self.get("mpc_parameters", {}).get("horizon", 1.5),
-            N=self.get("mpc_parameters", {}).get("N", 20),
-            frequency=self.get("mpc_parameters", {}).get("frequency", 100.0),
-            Q=self.get("mpc_parameters", {}).get("Q", [40.0, 40.0, 80.0]),
-            R=self.get("mpc_parameters", {}).get("R", [1.0, 1.0])
+        return ControlParams(
+            frequency=self.get("control_parameters", {}).get("frequency", 100.0),
+            k1=self.get("control_parameters", {}).get("k1", 1.0),
+            k2=self.get("control_parameters", {}).get("k2", 0.5),
+            k3=self.get("control_parameters", {}).get("k3", 2.0)
         )
     
     def get_vehicle_params(self) -> VehicleParams:
