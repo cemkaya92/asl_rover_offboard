@@ -1,33 +1,56 @@
+import os
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.substitutions import FindPackageShare
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import Command, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 
+
+namePackage = 'asl_rover_offboard'
+
 vehicle_params_path = PathJoinSubstitution([
-    FindPackageShare('asl_rover_offboard'),
+    FindPackageShare(namePackage),
     'config',
     'vehicle_parameters',
     'asl_rover_param.yaml'
 ])
 
 sitl_params_path = PathJoinSubstitution([
-    FindPackageShare('asl_rover_offboard'),
+    FindPackageShare(namePackage),
     'config',
     'sitl',
     'sitl_params.yaml'
 ])
 
 mpc_params_path = PathJoinSubstitution([
-    FindPackageShare('asl_rover_offboard'),
+    FindPackageShare(namePackage),
     'config',
     'controller',
     'controller_asl_rover.yaml'
 ])
 
+bridge_params = os.path.join(
+    get_package_share_directory(namePackage),
+    'config',
+    'sitl',
+    'bridge_parameters.yaml'
+)
+
+urdf_file = PathJoinSubstitution([
+    FindPackageShare(namePackage),
+    'model',
+    'urdf',
+    'asl_rover.urdf'
+])
+
+robot_description = Command(['xacro ', urdf_file])
+
+
 def generate_launch_description():
     return LaunchDescription([
+
         DeclareLaunchArgument(
             'vehicle_param_file',
             default_value='asl_rover_param.yaml',
@@ -40,6 +63,44 @@ def generate_launch_description():
         ),
 
         Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            arguments=[
+                '--ros-args',
+                '-p',
+                f'config_file:={bridge_params}',
+            ],
+            output='screen',
+        ),
+
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            parameters=[{'robot_description': robot_description}],
+            output='screen'
+        ),
+
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=[
+                '0.0', '0', '0.0', '0', '0', '0',
+                'base_link', 'asl_rover_0/lidar_2d_v2/link/lidar_2d_v2'
+            ],
+            output='screen'
+        ),
+
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=[
+                '0.0', '0', '0.0', '0', '0', '0',
+                'map', 'asl_rover_0/lidar_2d_v2/link/lidar_2d_v2'
+            ],
+            output='screen'
+        ),
+
+        Node(
             package='asl_rover_offboard',
             executable='motor_commander',
             name='motor_commander',
@@ -48,6 +109,7 @@ def generate_launch_description():
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file')
             }]
         ),
+
         Node(
             package='asl_rover_offboard',
             executable='backstepping_controller',
@@ -58,5 +120,6 @@ def generate_launch_description():
                 'controller_param_file': LaunchConfiguration('controller_param_file')
             }]
         )
+
     ])
 

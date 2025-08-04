@@ -16,7 +16,9 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('asl_rover_offboard/launch/*.py')),
         (os.path.join('share', package_name, 'config', 'sitl'), glob('asl_rover_offboard/config/sitl/*.yaml')),
         (os.path.join('share', package_name, 'config', 'controller'), glob('asl_rover_offboard/config/controller/*.yaml')),
-        (os.path.join('share', package_name, 'config', 'vehicle_parameters'), glob('asl_rover_offboard/config/vehicle_parameters/*.yaml'))
+        (os.path.join('share', package_name, 'config', 'vehicle_parameters'), glob('asl_rover_offboard/config/vehicle_parameters/*.yaml')),
+        (os.path.join('share', package_name, 'model', 'urdf'), glob('asl_rover_offboard/model/urdf/*.urdf')),
+        (os.path.join('share', package_name, 'model', 'urdf','meshes'), glob('asl_rover_offboard/model/urdf/meshes/*'))
     ],
     install_requires=['setuptools'],
     zip_safe=True,
