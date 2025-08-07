@@ -32,7 +32,7 @@ def figure8_trajectory(t, a=1.0, b=1.0, omega=1.0):
         omega (float): Angular frequency
 
     Returns:
-        pos, vel: arrays of x and y positions and velocities
+        pos, vel, acc: arrays of x and y positions, velocities, and accelerations
     """
     x = eval_traj.pos0[0] + a * np.sin(omega * t)
     y = eval_traj.pos0[1] + b * np.sin(2 * omega * t)
@@ -40,7 +40,10 @@ def figure8_trajectory(t, a=1.0, b=1.0, omega=1.0):
     x_dot = a * omega * np.cos(omega * t)
     y_dot = 2 * b * omega * np.cos(2 * omega * t)
 
-    return np.array([x,y]), np.array([x_dot,y_dot])
+    x_ddot = - a * omega * omega * np.sin(omega * t)
+    y_ddot = - 4 * b * omega * omega * np.sin(2 * omega * t)
+
+    return np.array([x,y]), np.array([x_dot,y_dot]), np.array([x_ddot,y_ddot])
 
 def elliptical_trajectory(t, a=1.0, b=1.0, omega=1.0):
     """
@@ -53,7 +56,7 @@ def elliptical_trajectory(t, a=1.0, b=1.0, omega=1.0):
         omega (float): Angular frequency
 
     Returns:
-        pos, vel: arrays of x and y positions and velocities
+        pos, vel, acc: arrays of x and y positions, velocities, and accelerations
     """
     x = eval_traj.pos0[0] + a * np.cos(omega * t)
     y = eval_traj.pos0[1] + b * np.sin(omega * t)
@@ -61,4 +64,7 @@ def elliptical_trajectory(t, a=1.0, b=1.0, omega=1.0):
     x_dot = - a * omega * np.sin(omega * t)
     y_dot =   b * omega * np.cos(omega * t)
 
-    return np.array([x,y]), np.array([x_dot,y_dot])
+    x_ddot = - a * omega * omega * np.cos(omega * t)
+    y_ddot = - b * omega * omega * np.sin(omega * t)
+
+    return np.array([x,y]), np.array([x_dot,y_dot]), np.array([x_ddot,y_ddot])

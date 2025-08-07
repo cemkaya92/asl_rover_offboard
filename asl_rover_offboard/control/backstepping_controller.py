@@ -10,7 +10,7 @@ from px4_msgs.msg import VehicleOdometry, TimesyncStatus
 from asl_rover_offboard.guidance.trajectory import eval_traj
 from asl_rover_offboard.utils.first_order_filter import FirstOrderFilter
 
-from asl_rover_offboard.utils.ploter import Logger
+#from asl_rover_offboard.utils.ploter import Logger
 
 from asl_rover_offboard.utils.param_loader import ParamLoader
 
@@ -100,7 +100,7 @@ class ControllerNode(Node):
         self.yaw_torque_filter = FirstOrderFilter(alpha=0.9)
 
         # Data logging
-        self.logger = Logger()
+        #self.logger = Logger()
         
 
         self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  # 100 Hz
@@ -171,15 +171,20 @@ class ControllerNode(Node):
         # pos_y_ref = self.pos[1] + v_ref * np.sin(psi_ref) * dt
         # x_ref = np.array([pos_x_ref, pos_y_ref, psi_ref, v_ref, w_ref])
 
-        pos_ref, vel_ref = eval_traj(self.t_sim,x0[0:2])
+        pos_ref, vel_ref, acc_ref = eval_traj(self.t_sim,x0[0:2])
         
         # Compute velocity and heading references from the trajectory
         vx, vy = vel_ref[0], vel_ref[1]
+        ax, ay = acc_ref[0], acc_ref[1]
 
         psi_ref = np.arctan2(vy, vx)
         v_ref = np.sqrt(vx**2 + vy**2)
-        psi_dot_ref = 1.0 * self.angle_diff(psi_ref , self.rpy[2])
-
+        #psi_dot_ref = 1.0 * self.angle_diff(psi_ref , self.rpy[2])
+        denom = (vx*vx + vy*vy)
+        if (denom < 1e-3):
+            psi_dot_ref = 0.0
+        else:
+            psi_dot_ref = (ay*vx - ax*vy)/denom
 
         # Construct error terms
         sin_theta = np.sin(self.rpy[2])

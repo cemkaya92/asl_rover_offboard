@@ -38,14 +38,6 @@ bridge_params = os.path.join(
     'bridge_parameters.yaml'
 )
 
-urdf_file = PathJoinSubstitution([
-    FindPackageShare(namePackage),
-    'model',
-    'urdf',
-    'asl_rover.urdf'
-])
-
-robot_description = Command(['xacro ', urdf_file])
 
 
 def generate_launch_description():
@@ -73,22 +65,6 @@ def generate_launch_description():
             output='screen',
         ),
 
-        Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            parameters=[{'robot_description': robot_description}],
-            output='screen'
-        ),
-
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            arguments=[
-                '0.0', '0', '0.0', '0', '0', '0',
-                'base_link', 'asl_rover_0/lidar_2d_v2/link/lidar_2d_v2'
-            ],
-            output='screen'
-        ),
 
         Node(
             package='tf2_ros',
