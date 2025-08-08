@@ -1,0 +1,12 @@
+/**:
+  ros__parameters:
+    control_parameters:
+        frequency: 50.0
+        Ts: 0.1
+        N: 25
+        v_max: 1.0
+        w_max: 1.5
+        Q: [5.0, 5.0, 1.0]
+        R: [0.5, 0.3]
+        Qf_factor: 15.0
+    
