@@ -20,6 +20,9 @@ class VehicleParams:
 @dataclass
 class ControlParams:
     frequency: float
-    k1: float
-    k2: float
-    k3: float
+    N: int
+    v_max: float
+    w_max: float
+    Q: List[float]  # length should be NX (e.g., 12)
+    R: List[float]  # length should be NU (e.g., 4)
+    Qf_factor: float

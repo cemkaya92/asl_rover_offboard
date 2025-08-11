@@ -44,10 +44,13 @@ class ParamLoader:
     def get_control_params(self) -> ControlParams:
 
         return ControlParams(
-            frequency=self.get("control_parameters", {}).get("frequency", 100.0),
-            k1=self.get("control_parameters", {}).get("k1", 1.0),
-            k2=self.get("control_parameters", {}).get("k2", 0.5),
-            k3=self.get("control_parameters", {}).get("k3", 2.0)
+            frequency=self.get("control_parameters", {}).get("frequency", 50.0),
+            N=self.get("control_parameters", {}).get("N", 25),
+            v_max=self.get("control_parameters", {}).get("v_max", 1.0),
+            w_max=self.get("control_parameters", {}).get("w_max", 1.5),
+            Q=self.get("control_parameters", {}).get("Q", [5.0, 5.0, 1.0]),
+            R=self.get("control_parameters", {}).get("R", [0.5, 0.3]),
+            Qf_factor=self.get("control_parameters", {}).get("Qf_factor", 15.0)
         )
     
     def get_vehicle_params(self) -> VehicleParams:

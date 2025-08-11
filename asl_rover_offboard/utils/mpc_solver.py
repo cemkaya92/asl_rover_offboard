@@ -12,9 +12,9 @@ from asl_rover_offboard.model.dynamics_model import build_casadi_model
 class MPCSolver:
     def __init__(self, mpc_params, vehicle_params, debug=False):
         self.N = mpc_params.N
-        self.Ts = mpc_params.Ts
-        self.Q = mpc_params.Q
-        self.R = mpc_params.R
+        self.Ts = 1.0 / mpc_params.frequency
+        self.Q = np.diag(mpc_params.Q)
+        self.R = np.diag(mpc_params.R)
         self.Qf_factor = mpc_params.Qf_factor
         self.debug = debug
 
@@ -41,7 +41,7 @@ class MPCSolver:
 
         Qc  = ca.MX(self.Q)
         Rc  = ca.MX(self.R)
-        Qf  = ca.MX(self.Qf_factor * self.Q)
+        Qf  = ca.MX(self.Qf_factor*self.Q)
         J   = 0
 
         for k in range(self.N):
@@ -121,8 +121,8 @@ class MPCSolver:
 
         try:
             sol = self.opti.solve()
-            U_sol = sol.value(self.U)
-            X_sol = sol.value(self.X)
+            U_sol = sol.value(self.U) # (2, N)
+            X_sol = sol.value(self.X) # (3, N+1)
             self.U_prev = U_sol
             self.X_prev = X_sol
             u0 = U_sol[:, 0].copy()

@@ -6,6 +6,7 @@ import numpy as np
 
 from std_msgs.msg import Float32MultiArray
 from px4_msgs.msg import VehicleOdometry, TimesyncStatus
+from obstacle_detector.msg import Obstacles
 
 
 from asl_rover_offboard.guidance.trajectory import eval_traj
@@ -20,7 +21,8 @@ import os
 
 import signal
 
-
+from nav_msgs.msg import Path
+from geometry_msgs.msg import PoseStamped
 
 
 class ControllerNode(Node):
@@ -29,9 +31,11 @@ class ControllerNode(Node):
         
         self.declare_parameter('vehicle_param_file', 'asl_rover_param.yaml')
         self.declare_parameter('controller_param_file', 'mpc_controller_asl_rover.yaml')
+        self.declare_parameter('world_frame', 'map')  # or 'odom'
 
         vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
         controller_param_file = self.get_parameter('controller_param_file').get_parameter_value().string_value
+        self.world_frame = self.get_parameter('world_frame').get_parameter_value().string_value
 
         package_dir = get_package_share_directory('asl_rover_offboard')
         
@@ -49,6 +53,7 @@ class ControllerNode(Node):
         odom_topic = sitl_yaml.get_topic("odometry_topic")
         timesync_topic = sitl_yaml.get_topic("status_topic")
         control_cmd_topic = sitl_yaml.get_topic("control_command_topic")
+        obstacle_topic = sitl_yaml.get_topic("obstacle_topic")
 
         # Controller parameters
         self.control_params = controller_yaml.get_control_params()
@@ -64,6 +69,13 @@ class ControllerNode(Node):
             depth=1
         )
 
+        obs_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+
         # Sub/Pub
         self.sub_odom = self.create_subscription(
             VehicleOdometry, 
@@ -74,11 +86,18 @@ class ControllerNode(Node):
             TimesyncStatus, 
             timesync_topic, 
             self.sync_callback, qos_profile)
-        #self.pub_motor = self.create_publisher(ActuatorMotors, '/fmu/in/actuator_motors', 10)
+        
+        self.sub_obs = self.create_subscription(
+            Obstacles, 
+            obstacle_topic, 
+            self.obstacles_callback, obs_qos)
+
         self.motor_cmd_pub = self.create_publisher(
             Float32MultiArray, 
             control_cmd_topic, 
             10)
+        
+        self.path_pub = self.create_publisher(Path, 'mpc_path', 10)
                         
 
         # State variables
@@ -93,11 +112,21 @@ class ControllerNode(Node):
         self.rpy = np.zeros(3)
         self.omega_body = np.zeros(3) # Angular velocity in body frame
 
-        # simple single-obstacle center (like your file)
-        self.obs_center = None  # np.array([x, y])
+        # --- obstacle state ---
+        self.obstacles_world = []     # list of {'center': np.array([x,y]), 'radius': float}
+        self.obs_center = None        # np.array([x,y]) of nearest obstacle (world frame)
+        self.obs_radius = None        # float
+
+        # MPC predicted path 
+        self.last_pred_X = None     # np.ndarray, shape (NX, N+1), world frame
+        self.last_ref_X  = None     # np.ndarray, shape (NX, N+1), world frame
+
+
+        self.Ts = 1.0 / self.control_params.frequency
 
         self.mpc = MPCSolver(self.control_params, self.vehicle_params, debug=False)
         self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  # 100 Hz
+        self.create_timer(1.0, self._publish_path)
 
         self.get_logger().info("Controller Node initialized.")
 
@@ -141,6 +170,51 @@ class ControllerNode(Node):
         r = R.from_quat([q_xyzw[1], q_xyzw[2], q_xyzw[3], q_xyzw[0]])
         return r.as_euler('ZYX', degrees=False)
 
+    def _local_to_world(self, xy: np.ndarray) -> np.ndarray:
+        """Transform (x,y) from robot frame -> world using current pose/yaw."""
+        yaw = float(self.rpy[2])
+        c, s = np.cos(yaw), np.sin(yaw)
+        xw = self.pos[0] + c*xy[0] - s*xy[1]
+        yw = self.pos[1] + s*xy[0] + c*xy[1]
+        return np.array([xw, yw], dtype=float)
+    
+    def obstacles_callback(self, msg: Obstacles):
+        obs_list = []
+    
+        # Circles (preferred if available)
+        if hasattr(msg, 'circles'):
+            for c in msg.circles:
+                cx, cy = float(c.center.x), float(c.center.y)
+                r = float(getattr(c, 'radius', 0.0))
+                center = np.array([cx, cy], dtype=float)
+                world = self._local_to_world(center)
+                obs_list.append({'center': world, 'radius': r})
+
+        # Segments (approximate each as a circle at the midpoint, radius ≈ half length)
+        if hasattr(msg, 'segments'):
+            for s in msg.segments:
+                x1, y1 = float(s.first_point.x), float(s.first_point.y)
+                x2, y2 = float(s.last_point.x),  float(s.last_point.y)
+                mid = np.array([(x1 + x2)/2.0, (y1 + y2)/2.0], dtype=float)
+                length = np.linalg.norm( np.array([x2 - x1, y2 - y1]) )
+                r = 0.5 * length
+                world = self._local_to_world(mid) 
+                obs_list.append({'center': world, 'radius': r})
+
+        self.obstacles_world = obs_list
+
+        if obs_list:
+            # Pick the nearest obstacle to the current robot position
+            dists = [np.linalg.norm(o['center'] - self.pos[:2]) for o in obs_list]
+            i = int(np.argmin(dists))
+            self.obs_center = obs_list[i]['center']
+            self.obs_radius = obs_list[i]['radius']
+            # self.get_logger().debug(f"Nearest obstacle @ {self.obs_center}, r={self.obs_radius:.2f}")
+        else:
+            self.obs_center = None
+            self.obs_radius = None
+    
+
     def sync_callback(self, msg):
         self.px4_timestamp = msg.timestamp
 
@@ -149,12 +223,12 @@ class ControllerNode(Node):
         Build xref_h (3, N+1) from the analytic trajectory and an optional obs_h (2, N+1).
         Uses current sim time self.t_sim and controller frequency from params.
         """
-        Ts = 1.0 / self.control_params.frequency
+        
         N  = self.mpc.N
 
         # Sample trajectory over horizon
         t0 = self.t_sim
-        t_samples = t0 + Ts * np.arange(N + 1)
+        t_samples = t0 + self.Ts * np.arange(N + 1)
 
         xs, ys, psis = [], [], []
         for tk in t_samples:
@@ -213,29 +287,28 @@ class ControllerNode(Node):
         else:
             psi_dot_ref = (ay*vx - ax*vy)/denom
 
-        xref = np.array([])
 
-        xref_h, obs_h = self._build_horizon()
-        ok, u0, _, _ = self.mpc.solve(self.x_now, xref_h, obs_h, r_safe=2.0)
+        xref_h, obs_h = self._build_horizon(x0)
+        ok, u0, X_opt, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
+        #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
+
+        # X_opt: shape (NX, N+1). If it’s (N+1, NX), transpose it.
+        self.last_pred_X = X_opt if X_opt.shape[0] <= X_opt.shape[1] else X_opt.T
+        self.last_ref_X  = xref_h
+
+        self.get_logger().info(f"u0= {u0}")
 
 
-        self.get_logger().info(f"x_ref= {pos_ref[0]} | diff= {pos_ref[0] - x0[0]}")
-        self.get_logger().info(f"y_ref= {pos_ref[1]} | diff= {pos_ref[1] - x0[1]}")
+        #u0 = np.array([0.0,0.0])
+
+        #self.get_logger().info(f"x_ref= {pos_ref[0]} | diff= {pos_ref[0] - x0[0]}")
+        #self.get_logger().info(f"y_ref= {pos_ref[1]} | diff= {pos_ref[1] - x0[1]}")
         # self.get_logger().info(f"v_ref= {p_ref} | diff= {np.array(v_ref) - self.vel}")
 
         # self.get_logger().info(f"roll= {self.rpy[0]*180/np.pi} | diff= {(0.0 - self.rpy[0])*180/np.pi}")
         # self.get_logger().info(f"pitch= {self.rpy[1]*180/np.pi} | diff= {(0.0 - self.rpy[1])*180/np.pi}")
-        self.get_logger().info(f"yaw_cmd= {psi_ref*180/np.pi} | diff= {(psi_ref - self.rpy[2])*180/np.pi}")
-        #u_mpc[0] = (-np.sqrt(u_mpc[0] / (4 * KF_SIM))) / MAX_OMEGA_SIM
-        # yaw_command = (yaw_command / self.max_torque)
-
-        # roll_command = (roll_command / self.max_torque)
-        # pitch_command = (pitch_command / self.max_torque)
-
-        # thrust_command = (-np.sqrt(0.027*9.8066 / (4 * KF_SIM)) / MAX_OMEGA_SIM )
-
-        # self.logger.log(self.t_sim, self.pos, self.vel, self.rpy, np.array([]), np.array([v_cmd,omega_cmd]))
-
+        #self.get_logger().info(f"yaw_cmd= {psi_ref*180/np.pi} | diff= {(psi_ref - self.rpy[2])*180/np.pi}")
+        
 
         # Publish
         msg = Float32MultiArray()
@@ -257,6 +330,45 @@ class ControllerNode(Node):
         Returns value in [-pi, pi]
         """
         return (a - b + np.pi) % (2 * np.pi) - np.pi
+
+    def _publish_path(self):
+        # Decide what to draw: prefer predicted trajectory, else reference
+        X = self.last_pred_X if self.last_pred_X is not None else self.last_ref_X
+        if X is None:
+            return
+
+        # Expect state layout: [x, y, psi, ...] (adjust indices if different)
+        x_idx, y_idx, yaw_idx = 0, 1, 2
+        xs = X[x_idx, :]
+        ys = X[y_idx, :]
+        yaws = X[yaw_idx, :] if X.shape[0] > yaw_idx else np.zeros_like(xs)
+
+        msg = Path()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.world_frame
+
+        poses = []
+        for x, y, yaw in zip(xs, ys, yaws):
+            p = PoseStamped()
+            p.header = msg.header
+            p.pose.position.x = float(x)
+            p.pose.position.y = float(y)
+            p.pose.position.z = 0.0
+
+            # yaw -> quaternion (Z-up, ENU)
+            cy = np.cos(yaw * 0.5)
+            sy = np.sin(yaw * 0.5)
+            p.pose.orientation.x = 0.0
+            p.pose.orientation.y = 0.0
+            p.pose.orientation.z = sy
+            p.pose.orientation.w = cy
+
+            poses.append(p)
+
+        msg.poses = poses
+        self.path_pub.publish(msg)
+
+
 
 def main(args=None):
     rclpy.init(args=args)

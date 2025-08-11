@@ -31,6 +31,8 @@ setup(
         'console_scripts': [
             'motor_commander = asl_rover_offboard.control.motor_commander:main',
             'backstepping_controller = asl_rover_offboard.control.backstepping_controller:main',
+            'mpc_controller = asl_rover_offboard.control.mpc_controller:main',
+            'laser_scan_sector_filter = asl_rover_offboard.utils.laser_scan_sector_filter:main',
         ],
     },
 )
