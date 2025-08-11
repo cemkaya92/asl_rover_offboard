@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     control_parameters:
-        frequency: 10.0
+        frequency: 1.0
         N: 50
         v_max: 1.0
         w_max: 1.5

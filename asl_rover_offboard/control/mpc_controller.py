@@ -122,7 +122,7 @@ class ControllerNode(Node):
         self.last_ref_X  = None     # np.ndarray, shape (NX, N+1), world frame
 
 
-        self.Ts = 1.0 / self.control_params.frequency
+        self.Ts = 0.5 #/ self.control_params.frequency
 
         self.mpc = MPCSolver(self.control_params, self.vehicle_params, debug=False)
         self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  # 100 Hz
@@ -249,6 +249,8 @@ class ControllerNode(Node):
 
         xref_h = np.vstack([np.array(xs), np.array(ys), np.array(psis)])  # (3, N+1)
 
+        #self.get_logger().info(f"Ts= {self.Ts} | {self.control_params.frequency}")
+
         # --- obstacle horizon (optional) ---
         obs_h = None
         if self.obs_center is not None:
@@ -272,29 +274,43 @@ class ControllerNode(Node):
         x0 = np.array([self.pos[0], self.pos[1], self.rpy[2]])
 
 
-        pos_ref, vel_ref, acc_ref = eval_traj(self.t_sim,x0[0:2])
-        
-        # Compute velocity and heading references from the trajectory
-        vx, vy = vel_ref[0], vel_ref[1]
-        ax, ay = acc_ref[0], acc_ref[1]
-
-        psi_ref = np.arctan2(vy, vx)
-        v_ref = np.sqrt(vx**2 + vy**2)
-        #psi_dot_ref = 1.0 * self.angle_diff(psi_ref , self.rpy[2])
-        denom = (vx*vx + vy*vy)
-        if (denom < 1e-3):
-            psi_dot_ref = 0.0
-        else:
-            psi_dot_ref = (ay*vx - ax*vy)/denom
-
-
         xref_h, obs_h = self._build_horizon(x0)
         ok, u0, X_opt, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
         #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
 
-        # X_opt: shape (NX, N+1). If it’s (N+1, NX), transpose it.
-        self.last_pred_X = X_opt if X_opt.shape[0] <= X_opt.shape[1] else X_opt.T
+        #X_opt = xref_h
+
         self.last_ref_X  = xref_h
+
+        # Current pose in world
+        p0_w = x0[0:2]           # shape (2,)
+        psi0 = float(x0[2])
+
+        # Vectorized world->body transform for all horizon points
+        p_w = X_opt[0:2, :]      # (2, N+1)
+        dp_w = p_w - p0_w.reshape(2, 1)    # translate so body origin is at (0,0)
+
+        c, s = np.cos(psi0), np.sin(psi0)
+        R_w2b = np.array([[ c,  s],
+                        [-s,  c]])       # rotates world coords into body frame
+
+        p_b = R_w2b @ dp_w                 # (2, N+1)
+
+        # Build body-frame copy
+        X_body = X_opt.copy()
+        X_body[0:2, :] = p_b
+
+        # Yaw relative to body (wrap to [-pi, pi])
+        def wrap(a):
+            return (a + np.pi) % (2*np.pi) - np.pi
+
+        X_body[2, :] = wrap(X_opt[2, :] - psi0)
+
+        # Optional: transform velocity components if your state stores world vx,vy
+        # If your state has speed v along heading already, no change needed.
+
+        self.last_pred_X = X_body
+
 
         self.get_logger().info(f"u0= {u0}")
 
