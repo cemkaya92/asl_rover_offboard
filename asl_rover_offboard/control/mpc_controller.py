@@ -30,16 +30,18 @@ class ControllerNode(Node):
         super().__init__('controller_node')
         
         self.declare_parameter('vehicle_param_file', 'asl_rover_param.yaml')
+        self.declare_parameter('sitl_param_file', 'sitl_param.yaml')
         self.declare_parameter('controller_param_file', 'mpc_controller_asl_rover.yaml')
         self.declare_parameter('world_frame', 'map')  # or 'odom'
 
         vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
+        sitl_param_file = self.get_parameter('sitl_param_file').get_parameter_value().string_value
         controller_param_file = self.get_parameter('controller_param_file').get_parameter_value().string_value
         self.world_frame = self.get_parameter('world_frame').get_parameter_value().string_value
 
         package_dir = get_package_share_directory('asl_rover_offboard')
         
-        sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', 'sitl_params.yaml')
+        sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', sitl_param_file)
         vehicle_yaml_path = os.path.join(package_dir, 'config', 'vehicle_parameters', vehicle_param_file)
         controller_yaml_path = os.path.join(package_dir, 'config', 'controller', controller_param_file)
 
@@ -325,7 +327,7 @@ class ControllerNode(Node):
         self.last_pred_X = X_body
 
 
-        self.get_logger().info(f"u0= {u0} | {self.control_params.frequency}")
+        #self.get_logger().info(f"u0= {u0} | {self.control_params.frequency}")
 
 
         #u0 = np.array([0.0,0.0])

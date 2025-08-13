@@ -22,7 +22,7 @@ sitl_params_path = PathJoinSubstitution([
     FindPackageShare(namePackage),
     'config',
     'sitl',
-    'sitl_params.yaml'
+    'sitl_coop_params.yaml'
 ])
 
 mpc_params_path = PathJoinSubstitution([
@@ -52,7 +52,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'sitl_param_file',
-            default_value='sitl_params.yaml',
+            default_value='sitl_coop_params.yaml',
             description='sitl param file inside config/sitl/'
         ),
 
@@ -68,8 +68,8 @@ def generate_launch_description():
             name='laser_scan_sector_filter',
             output='screen',
             parameters=[{
-                'input_topic': '/merged_scan',
-                'output_topic': '/scan_filtered',
+                'input_topic': '/rover/merged_scan',
+                'output_topic': '/rover/scan_filtered',
                 'min_angle_deg': 110.0,
                 'max_angle_deg': 250.0,
                 'mode': 'mask',
@@ -107,8 +107,8 @@ def generate_launch_description():
             name='obstacle_extractor_node',
             output='screen',
             remappings=[
-                ('scan', '/scan_filtered'),
-                ('pcl',  '/scan_filtered'),
+                ('scan', '/rover/scan_filtered'),
+                ('pcl',  '/rover/scan_filtered'),
             ],
             parameters=[{
                 'active': True,

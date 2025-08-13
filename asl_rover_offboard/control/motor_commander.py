@@ -20,10 +20,13 @@ class MotorCommander(Node):
         
         # Declare param with default
         self.declare_parameter('vehicle_param_file', 'asl_rover_param.yaml')
-        vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
+        self.declare_parameter('sitl_param_file', 'sitl_params.yaml')
 
-        sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', 'sitl_params.yaml')
+        vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
+        sitl_param_file = self.get_parameter('sitl_param_file').get_parameter_value().string_value
+
         vehicle_yaml_path = os.path.join(package_dir, 'config', 'vehicle_parameters', vehicle_param_file)
+        sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', sitl_param_file)
 
         # Load parameters
         sitl_yaml = ParamLoader(sitl_yaml_path)
@@ -45,6 +48,11 @@ class MotorCommander(Node):
         # self.torque_pub = self.create_publisher(VehicleTorqueSetpoint, sitl_yaml.get_topic("torque_setpoints_topic"), 1)
         
         self.create_subscription(Float32MultiArray, sitl_yaml.get_topic("control_command_topic"), self.control_cmd_callback, 10)
+
+
+        self.sys_id = sitl_yaml.get_nested(["sys_id"],1)
+
+        self.get_logger().info(f"sys_id= {self.sys_id}")
 
         # initial states
         self.latest_motor_cmd = ActuatorMotors()
@@ -86,8 +94,8 @@ class MotorCommander(Node):
         # Start Offboard + Arm only after receiving first valid control command
         # if not self.offboard_set and any([abs(x) > 1e-3 for x in self.latest_motor_cmd]):
         if not self.offboard_set:
-            self.cmd_pub.publish(create_offboard_mode_command(now_us))
-            self.cmd_pub.publish(create_arm_command(now_us))
+            self.cmd_pub.publish(create_offboard_mode_command(now_us,self.sys_id))
+            self.cmd_pub.publish(create_arm_command(now_us,self.sys_id))
             self.offboard_set = True
             self.get_logger().info("Sent OFFBOARD and ARM command") 
 

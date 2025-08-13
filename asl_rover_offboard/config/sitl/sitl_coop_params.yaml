@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    sitl_mode: true
+    # Control Mode 1: Thrust + Attitude Setpoints 2: Thrust & Torque Setpoints 3: Actuator Control
+    control_mode: 1
+    sys_id: 2
+    topics_names:
+      command_pose_topic: "command/pose"
+      command_traj_topic: "command/trajectory"
+      control_command_topic: "/rover/control/command"
+      obstacle_topic: "/rover/raw_obstacles"
+      odometry_topic: "/px4_1/fmu/out/vehicle_odometry"
+      status_topic: "/px4_1/fmu/out/vehicle_status_v1"
+      battery_status_topic: "/px4_1/fmu/out/battery_status"
+      actuator_status_topic: "/px4_1/fmu/out/actuator_motors"
+      offboard_control_topic: "/px4_1/fmu/in/offboard_control_mode"
+      vehicle_command_topic: "/px4_1/fmu/in/vehicle_command"
+      attitude_setpoint_topic: "/px4_1/fmu/in/vehicle_attitude_setpoint_v1"
+      thrust_setpoints_topic: "/px4_1/fmu/in/vehicle_thrust_setpoint"
+      torque_setpoints_topic: "/px4_1/fmu/in/vehicle_torque_setpoint"
+      actuator_control_topic: "/px4_1/fmu/in/actuator_motors"
+      mocap_topic: "/px4_1/fmu/in/vehicle_mocap_odometry"
