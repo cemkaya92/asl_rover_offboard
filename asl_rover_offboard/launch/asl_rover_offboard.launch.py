@@ -51,7 +51,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'controller_param_file',
-            default_value='controller_asl_rover.yaml',
+            default_value='mpc_controller_asl_rover.yaml',
             description='Controller parameter file inside config/controller/'
         ),
     
@@ -120,6 +120,33 @@ def generate_launch_description():
                 'max_merge_spread': 0.2,
                 'max_circle_radius': 0.8,
                 'radius_enlargement': 0.3,
+
+                # IMPORTANT: don't use 'map' unless you actually have a map frame
+                # and you mean to transform into it. base_link is safer here.
+                'frame_id': 'map',
+            }]
+        ), 
+
+        Node(
+            package='obstacle_detector',          # use the actual package you installed
+            executable='obstacle_tracker_node',        # or 'obstacle_extractor_node' if that’s the exec name
+            name='obstacle_tracker_node',
+            output='screen',
+            remappings=[
+                #('/tracked_obstacles', '/obstacles'),
+                #('tracked_obstacles_visualization',  '/obstacles_visualization'),
+                #('/fmu/out/vehicle_odometry',  '/fmu/out/vehicle_odometry'),
+            ],
+            parameters=[{
+                'active': True,
+
+                'loop_rate': 100.0,
+                'tracking_duration': 5.0,
+                'min_correspondence_cost': 0.6,
+                'std_correspondence_dev': 0.15,
+                'process_variance': 0.1,
+                'process_rate_variance': 0.1,
+                'measurement_variance': 1.0,
 
                 # IMPORTANT: don't use 'map' unless you actually have a map frame
                 # and you mean to transform into it. base_link is safer here.

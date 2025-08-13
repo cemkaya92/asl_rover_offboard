@@ -50,6 +50,7 @@ class ParamLoader:
             w_max=self.get("control_parameters", {}).get("w_max", 1.5),
             Q=self.get("control_parameters", {}).get("Q", [5.0, 5.0, 1.0]),
             R=self.get("control_parameters", {}).get("R", [0.5, 0.3]),
+            R_delta=self.get("control_parameters", {}).get("R_delta", [0.5, 0.3]),
             Qf_factor=self.get("control_parameters", {}).get("Qf_factor", 15.0)
         )
     

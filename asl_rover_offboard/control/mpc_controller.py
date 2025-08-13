@@ -121,12 +121,13 @@ class ControllerNode(Node):
         self.last_pred_X = None     # np.ndarray, shape (NX, N+1), world frame
         self.last_ref_X  = None     # np.ndarray, shape (NX, N+1), world frame
 
+        self.u_prev = np.array([0.0, 0.0])
 
-        self.Ts = 0.5 #/ self.control_params.frequency
+
+        self.Ts = 1.0 / self.control_params.frequency
 
         self.mpc = MPCSolver(self.control_params, self.vehicle_params, debug=False)
         self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  # 100 Hz
-        self.create_timer(1.0, self._publish_path)
 
         self.get_logger().info("Controller Node initialized.")
 
@@ -184,7 +185,7 @@ class ControllerNode(Node):
         # Circles (preferred if available)
         if hasattr(msg, 'circles'):
             for c in msg.circles:
-                cx, cy = float(c.center.x), float(c.center.y)
+                cx, cy = float(c.center.x), float(-c.center.y)
                 r = float(getattr(c, 'radius', 0.0))
                 center = np.array([cx, cy], dtype=float)
                 world = self._local_to_world(center)
@@ -193,8 +194,8 @@ class ControllerNode(Node):
         # Segments (approximate each as a circle at the midpoint, radius ≈ half length)
         if hasattr(msg, 'segments'):
             for s in msg.segments:
-                x1, y1 = float(s.first_point.x), float(s.first_point.y)
-                x2, y2 = float(s.last_point.x),  float(s.last_point.y)
+                x1, y1 = float(s.first_point.x), float(-s.first_point.y)
+                x2, y2 = float(s.last_point.x),  float(-s.last_point.y)
                 mid = np.array([(x1 + x2)/2.0, (y1 + y2)/2.0], dtype=float)
                 length = np.linalg.norm( np.array([x2 - x1, y2 - y1]) )
                 r = 0.5 * length
@@ -202,6 +203,8 @@ class ControllerNode(Node):
                 obs_list.append({'center': world, 'radius': r})
 
         self.obstacles_world = obs_list
+
+        #self.get_logger().info(f"obs_list= {obs_list}")
 
         if obs_list:
             # Pick the nearest obstacle to the current robot position
@@ -229,23 +232,31 @@ class ControllerNode(Node):
         # Sample trajectory over horizon
         t0 = self.t_sim
         t_samples = t0 + self.Ts * np.arange(N + 1)
+        psi_prev = float(x0[2])          # anchor / fallback
+        v_eps = 1e-3
 
-        xs, ys, psis = [], [], []
+        xs, ys, psis_raw = [], [], []
         for tk in t_samples:
             pos_ref, vel_ref, acc_ref = eval_traj(tk, x0[0:2])   # pos=[x,y], vel=[vx,vy], acc=[ax,ay]
             vx, vy = vel_ref[0], vel_ref[1]
-            ax, ay = acc_ref[0], acc_ref[1]
+            #ax, ay = acc_ref[0], acc_ref[1]
 
-            # heading and (optional) yaw rate ref from vel/acc
-            psi_ref = np.arctan2(vy, vx)
-            # If you ever need ψ̇: psi_dot_ref = (ay*vx - ax*vy) / max(vx*vx + vy*vy, 1e-3)
+            # heading from velocity; hold previous if almost stopped
+            if vx*vx + vy*vy > v_eps*v_eps:
+                psi_ref = np.arctan2(vy, vx)
+                psi_prev = psi_ref
+            else:
+                psi_ref = psi_prev
 
             xs.append(pos_ref[0])
             ys.append(pos_ref[1])
-            psis.append(psi_ref)
+            psis_raw.append(psi_ref)
 
-        # unwrap heading to keep it continuous across ±π
-        psis = np.unwrap(np.array(psis))
+        
+        # unwrap relative to current yaw so it's continuous across ±π
+        psi0 = float(x0[2])
+        psis_raw = np.asarray(psis_raw, dtype=float)
+        psis = np.unwrap(np.r_[psi0, psis_raw])[1:]   # keep first value aligned to psi0
 
         xref_h = np.vstack([np.array(xs), np.array(ys), np.array(psis)])  # (3, N+1)
 
@@ -256,7 +267,7 @@ class ControllerNode(Node):
         if self.obs_center is not None:
             dist = np.linalg.norm(xref_h[:2, 0] - self.obs_center)  # distance from current ref start
             # keep it simple: only enable if close enough
-            if dist <= 6.0:
+            if dist <= 8.0:
                 obs_h = np.tile(self.obs_center.reshape(2, 1), (1, N + 1))
 
         return xref_h, obs_h
@@ -275,8 +286,10 @@ class ControllerNode(Node):
 
 
         xref_h, obs_h = self._build_horizon(x0)
-        ok, u0, X_opt, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
+        ok, u0, X_opt, _ = self.mpc.solve(x0, self.u_prev, xref_h, obs_h, r_safe=1.0)
         #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
+
+        self.u_prev = u0
 
         #X_opt = xref_h
 
@@ -312,7 +325,7 @@ class ControllerNode(Node):
         self.last_pred_X = X_body
 
 
-        self.get_logger().info(f"u0= {u0}")
+        self.get_logger().info(f"u0= {u0} | {self.control_params.frequency}")
 
 
         #u0 = np.array([0.0,0.0])
@@ -332,6 +345,7 @@ class ControllerNode(Node):
         self.motor_cmd_pub.publish(msg)
 
    
+        self._publish_path()
 
         #self.get_logger().info(f"t={self.t_sim:.2f} | pos={self.pos.round(2)} | u={np.round(u_mpc, 4)}")
         # self.get_logger().info(f"t={self.t_sim:.2f} | u={np.round(u_mpc, 4)}")
@@ -356,8 +370,8 @@ class ControllerNode(Node):
         # Expect state layout: [x, y, psi, ...] (adjust indices if different)
         x_idx, y_idx, yaw_idx = 0, 1, 2
         xs = X[x_idx, :]
-        ys = X[y_idx, :]
-        yaws = X[yaw_idx, :] if X.shape[0] > yaw_idx else np.zeros_like(xs)
+        ys = -X[y_idx, :]
+        yaws = -X[yaw_idx, :] if X.shape[0] > yaw_idx else np.zeros_like(xs)
 
         msg = Path()
         msg.header.stamp = self.get_clock().now().to_msg()

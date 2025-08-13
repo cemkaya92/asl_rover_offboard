@@ -25,4 +25,5 @@ class ControlParams:
     w_max: float
     Q: List[float]  # length should be NX (e.g., 12)
     R: List[float]  # length should be NU (e.g., 4)
+    R_delta: List[float]  # length should be NU (e.g., 4)
     Qf_factor: float

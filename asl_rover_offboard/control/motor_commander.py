@@ -64,7 +64,7 @@ class MotorCommander(Node):
         self.get_logger().info("MotorCommander with Offboard control started")
 
     def motor_command_timer_callback(self):
-
+        #a=0.0
         self.motor_pub.publish(self.latest_motor_cmd)
 
 
