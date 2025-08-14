@@ -95,7 +95,9 @@ def generate_launch_description():
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
                 'controller_param_file': LaunchConfiguration('controller_param_file'),
-                'sitl_param_file': LaunchConfiguration('sitl_param_file')
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'trajectory_topic': '/rover/trajectory',
+                'world_frame': 'map'
             }]
         ),
 
@@ -128,11 +130,14 @@ def generate_launch_description():
                 'max_merge_separation': 0.2,
                 'max_merge_spread': 0.2,
                 'max_circle_radius': 0.8,
-                'radius_enlargement': 0.3,
+                'radius_enlargement': 0.5,
 
                 # IMPORTANT: don't use 'map' unless you actually have a map frame
                 # and you mean to transform into it. base_link is safer here.
                 'frame_id': 'map',
+
+                'obstacle_pub_topic': '/rover/raw_obstacles',
+                'obstacle_visual_pub_topic': '/rover/raw_obstacles_visualization',
             }]
         ), 
 
@@ -142,15 +147,15 @@ def generate_launch_description():
             name='obstacle_tracker_node',
             output='screen',
             remappings=[
-                #('/tracked_obstacles', '/obstacles'),
-                #('tracked_obstacles_visualization',  '/obstacles_visualization'),
+                #('/obstacles', '/rover/tracked_obstacles'),
+                #('/obstacles_visualization',  '/rover/tracked_obstacles_visualization'),
                 #('/fmu/out/vehicle_odometry',  '/fmu/out/vehicle_odometry'),
             ],
             parameters=[{
                 'active': True,
 
                 'loop_rate': 100.0,
-                'tracking_duration': 5.0,
+                'tracking_duration': 0.5,
                 'min_correspondence_cost': 0.6,
                 'std_correspondence_dev': 0.15,
                 'process_variance': 0.1,
@@ -160,6 +165,10 @@ def generate_launch_description():
                 # IMPORTANT: don't use 'map' unless you actually have a map frame
                 # and you mean to transform into it. base_link is safer here.
                 'frame_id': 'map',
+
+                'obstacle_sub_topic': '/rover/raw_obstacles',
+                'obstacle_pub_topic': '/rover/tracked_obstacles',
+                'obstacle_visual_pub_topic': '/rover/tracked_obstacles_visualization',
             }]
         )
 

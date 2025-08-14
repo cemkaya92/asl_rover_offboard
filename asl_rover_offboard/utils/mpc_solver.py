@@ -25,6 +25,7 @@ class MPCSolver:
         self.rep_gain    = getattr(mpc_params, 'rep_gain', 4.0)     # strength of repulsion
         self.rep_margin  = getattr(mpc_params, 'rep_margin', 1.0)   # extra radius where repulsion starts [m]
 
+        self.rho_slack = 100.0  # penalty on keep-out slack (tune 50–200)
 
         # === Load CasADi dynamic model with UAV params ===
         _, F = build_casadi_model(self.Ts)
@@ -34,6 +35,7 @@ class MPCSolver:
         opti = ca.Opti()
         X = opti.variable(3, self.N+1)
         U = opti.variable(2, self.N)
+        s = opti.variable(1, self.N)         # nonnegative slack per stage
 
         x_param    = opti.parameter(3, 1)       # current state
         xref_param = opti.parameter(3, self.N+1)     # horizon reference
@@ -43,7 +45,7 @@ class MPCSolver:
 
 
         opti.subject_to(X[:,0] == x_param)
-
+        opti.subject_to(s >= 0)
 
         Qc  = ca.MX(self.Q)
         Rc  = ca.MX(self.R)
@@ -62,10 +64,7 @@ class MPCSolver:
 
             # --- input smoothness and effort ---
             # ΔU: first step vs last applied, then consecutive differences
-            if k == 0:
-                du = U[:, 0] - u_prev_param         # uses (2,1) param
-            else:
-                du = U[:, k] - U[:, k-1]
+            du = (U[:, 0] - u_prev_param) if k == 0 else (U[:, k] - U[:, k-1])
 
             J += ca.mtimes([ex.T, Qc, ex]) + ca.mtimes([U[:, k].T, Rc, U[:, k]]) + ca.mtimes([du.T, R_delta, du])
 
@@ -74,10 +73,12 @@ class MPCSolver:
             dy = X[1, k+1] - O_param[1, k+1]
 
             d_obs_sq = dx*dx + dy*dy
-            opti.subject_to(d_obs_sq >= R_safe[0]*R_safe[0])
+            opti.subject_to(d_obs_sq + s[0, k] >= R_safe[0]*R_safe[0])  # <-- slack keeps QP/NLP feasible
+
+            J += self.rho_slack * s[0, k]**2
 
             # --- SOFT repulsion (starts outside R_safe) ---
-            Rinf2 = (R_safe[0] + self.rep_margin) * (R_safe[0] + self.rep_margin)
+            Rinf2 = (R_safe[0] + self.rep_margin)**2
             phi   = self._softplus(Rinf2 - d_obs_sq)         # >0 only when inside influence radius
             J    += self.rep_gain * phi
 
@@ -87,18 +88,57 @@ class MPCSolver:
         J += ca.mtimes([exN.T, Qf, exN])
 
         opti.minimize(J)
+
         opti.solver('ipopt', {
             'ipopt.print_level': 0,
             'print_time': 0,
             'ipopt.sb': 'yes',
-            'ipopt.max_iter': 120,
+            'ipopt.max_iter': 300,
+            'ipopt.tol': 1e-6,
+            'ipopt.acceptable_tol': 1e-3,
+            'ipopt.max_cpu_time': 0.9*self.Ts,
+            'ipopt.hessian_approximation': 'exact',       
+            'ipopt.mu_strategy': 'adaptive',         # (default) robust
+            # For very “twitchy” problems sometimes:
+            # 'ipopt.mu_strategy': 'monotone',
         })
+
+
+                
+        '''
+        opti.solver('ipopt', {
+            'ipopt.print_level': 0,
+            'print_time': 0,
+            'ipopt.sb': 'yes',
+            'ipopt.max_iter': 300,
+            'ipopt.tol': 1e-6,
+            'ipopt.acceptable_tol': 1e-3,
+            'ipopt.max_cpu_time': 0.9*self.Ts,
+            'ipopt.hessian_approximation': 'limited-memory',  # LBFGS: faster, less memory
+            # or use exact Hessian (default) if your problem is small & well scaled
+            # 'ipopt.hessian_approximation': 'exact',
+            'ipopt.limited_memory_max_history': 20,          # LBFGS history size
+            'ipopt.mu_strategy': 'adaptive',         # (default) robust
+            # For very “twitchy” problems sometimes:
+            # 'ipopt.mu_strategy': 'monotone',
+            'ipopt.nlp_scaling_method': 'gradient-based',  # good default
+            # or
+            # 'ipopt.nlp_scaling_method': 'none',
+            'ipopt.bound_relax_factor': 1e-8,        # tighter bound handling
+            'ipopt.bound_push': 1e-8,
+            'ipopt.constr_mult_init_max': 1e3,       # safer multiplier init
+            'ipopt.warm_start_init_point': 'yes',
+            'ipopt.warm_start_bound_push': 1e-8,
+            'ipopt.warm_start_mult_bound_push': 1e-8,
+        })
+        '''
 
         self.opti = opti
         self.X, self.U = X, U
         self.x_param, self.xref_param = x_param, xref_param
         self.O_param, self.R_safe = O_param, R_safe
         self.u_prev_param = u_prev_param
+        self.s = s
 
         # rolling warm-start buffers
         self.X_prev = None

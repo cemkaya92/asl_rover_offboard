@@ -150,7 +150,7 @@ def generate_launch_description():
                 'active': True,
 
                 'loop_rate': 100.0,
-                'tracking_duration': 5.0,
+                'tracking_duration': 0.5,
                 'min_correspondence_cost': 0.6,
                 'std_correspondence_dev': 0.15,
                 'process_variance': 0.1,

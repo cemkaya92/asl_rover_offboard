@@ -33,11 +33,13 @@ class ControllerNode(Node):
         self.declare_parameter('sitl_param_file', 'sitl_param.yaml')
         self.declare_parameter('controller_param_file', 'mpc_controller_asl_rover.yaml')
         self.declare_parameter('world_frame', 'map')  # or 'odom'
+        self.declare_parameter('trajectory_topic', '/trajectory') 
 
         vehicle_param_file = self.get_parameter('vehicle_param_file').get_parameter_value().string_value
         sitl_param_file = self.get_parameter('sitl_param_file').get_parameter_value().string_value
         controller_param_file = self.get_parameter('controller_param_file').get_parameter_value().string_value
         self.world_frame = self.get_parameter('world_frame').get_parameter_value().string_value
+        trajectory_topic = self.get_parameter('trajectory_topic').get_parameter_value().string_value
 
         package_dir = get_package_share_directory('asl_rover_offboard')
         
@@ -99,7 +101,10 @@ class ControllerNode(Node):
             control_cmd_topic, 
             10)
         
-        self.path_pub = self.create_publisher(Path, 'mpc_path', 10)
+        self.trajectory_pub = self.create_publisher(
+            Path, 
+            trajectory_topic, 
+            10)
                         
 
         # State variables
@@ -129,7 +134,7 @@ class ControllerNode(Node):
         self.Ts = 1.0 / self.control_params.frequency
 
         self.mpc = MPCSolver(self.control_params, self.vehicle_params, debug=False)
-        self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  # 100 Hz
+        self.timer_mpc = self.create_timer(1.0 / self.control_params.frequency, self.control_loop)  
 
         self.get_logger().info("Controller Node initialized.")
 
@@ -347,7 +352,7 @@ class ControllerNode(Node):
         self.motor_cmd_pub.publish(msg)
 
    
-        self._publish_path()
+        self._publish_trajectory()
 
         #self.get_logger().info(f"t={self.t_sim:.2f} | pos={self.pos.round(2)} | u={np.round(u_mpc, 4)}")
         # self.get_logger().info(f"t={self.t_sim:.2f} | u={np.round(u_mpc, 4)}")
@@ -363,7 +368,7 @@ class ControllerNode(Node):
         """
         return (a - b + np.pi) % (2 * np.pi) - np.pi
 
-    def _publish_path(self):
+    def _publish_trajectory(self):
         # Decide what to draw: prefer predicted trajectory, else reference
         X = self.last_pred_X if self.last_pred_X is not None else self.last_ref_X
         if X is None:
@@ -398,7 +403,7 @@ class ControllerNode(Node):
             poses.append(p)
 
         msg.poses = poses
-        self.path_pub.publish(msg)
+        self.trajectory_pub.publish(msg)
 
 
 
