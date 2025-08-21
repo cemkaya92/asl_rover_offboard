@@ -1,0 +1,81 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="asl_rover">
+  <!-- Params to tune quickly -->
+  <xacro:property name="wheel_radius" value="0.06"/>
+  <xacro:property name="wheel_width"  value="0.06"/>
+
+  <!-- Base link with your mesh (from your SDF) -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+      <geometry>
+        <mesh filename="package://asl_rover_offboard/model/urdf/meshes/base.dae"/>
+      </geometry>
+      <material name="base_mat">
+        <color rgba="0.8 0.8 0.85 1.0"/>
+      </material>
+    </visual>
+    <!-- Collision: keep simple so RViz stays snappy -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.40 0.30 0.10"/></geometry>
+    </collision>
+    <!-- Inertials are ignored by RViz, so keep tiny/safe values -->
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+
+  <!-- Lidar (fixed on top of base) -->
+  <link name="lidar_link">
+    <visual>
+      <origin xyz="0 0 0.12" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://asl_rover_offboard/model/urdf/meshes/lidar_2d_v2.dae"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="lidar_link"/>
+    <origin xyz="0 0 0.12" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Four wheels as cylinders (simple & fast for RViz) -->
+  <!-- Adjust xyz to match your frame geometry -->
+  <xacro:macro name="wheel" params="name x y">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.2"/>
+        <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+      </inertial>
+    </link>
+    <joint name="${name}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child  link="${name}"/>
+      <!-- X forward, Y left; flip if your frames differ -->
+      <origin xyz="${x} ${y} 0.03" rpy="0 ${pi/2} 0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Place wheels (tweak x/y to your track and wheelbase) -->
+  <xacro:wheel name="wheel0_link" x=" 0.18" y=" 0.14"/>
+  <xacro:wheel name="wheel1_link" x=" 0.18" y="-0.14"/>
+  <xacro:wheel name="wheel2_link" x="-0.18" y=" 0.14"/>
+  <xacro:wheel name="wheel3_link" x="-0.18" y="-0.14"/>
+</robot>
+
