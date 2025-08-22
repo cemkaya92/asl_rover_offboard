@@ -33,6 +33,7 @@ setup(
             'backstepping_controller = asl_rover_offboard.control.backstepping_controller:main',
             'mpc_controller = asl_rover_offboard.control.mpc_controller:main',
             'laser_scan_sector_filter = asl_rover_offboard.utils.laser_scan_sector_filter:main',
+            'wait_px4_ready = asl_rover_offboard.utils.wait_px4_ready:main',
         ],
     },
 )

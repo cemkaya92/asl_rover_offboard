@@ -10,7 +10,6 @@ from obstacle_detector.msg import Obstacles
 
 
 from asl_rover_offboard.guidance.trajectory import eval_traj
-from asl_rover_offboard.utils.first_order_filter import FirstOrderFilter
 
 from asl_rover_offboard.utils.mpc_solver import MPCSolver
 
@@ -244,7 +243,7 @@ class ControllerNode(Node):
 
         xs, ys, psis_raw = [], [], []
         for tk in t_samples:
-            pos_ref, vel_ref, acc_ref = eval_traj(tk, x0[0:2])   # pos=[x,y], vel=[vx,vy], acc=[ax,ay]
+            pos_ref, vel_ref, _ = eval_traj(tk, x0)   # pos=[x,y], vel=[vx,vy], acc=[ax,ay]
             vx, vy = vel_ref[0], vel_ref[1]
             #ax, ay = acc_ref[0], acc_ref[1]
 
@@ -295,6 +294,8 @@ class ControllerNode(Node):
         xref_h, obs_h = self._build_horizon(x0)
         ok, u0, X_opt, _ = self.mpc.solve(x0, self.u_prev, xref_h, obs_h, r_safe=1.0)
         #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
+
+        #self.get_logger().info(f"x0= {x0} | u0= {u0} | xref= {xref_h}")
 
         self.u_prev = u0
 

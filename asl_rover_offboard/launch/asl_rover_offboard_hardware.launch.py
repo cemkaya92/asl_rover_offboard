@@ -52,7 +52,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'sitl_param_file',
-            default_value='sitl_params.yaml',
+            default_value='experiment_coop_params.yaml',
             description='sitl param file inside config/sitl/'
         ),
 
