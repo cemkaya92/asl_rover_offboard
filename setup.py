@@ -17,6 +17,7 @@ setup(
         (os.path.join('share', package_name, 'config', 'sitl'), glob('asl_rover_offboard/config/sitl/*.yaml')),
         (os.path.join('share', package_name, 'config', 'controller'), glob('asl_rover_offboard/config/controller/*.yaml')),
         (os.path.join('share', package_name, 'config', 'vehicle_parameters'), glob('asl_rover_offboard/config/vehicle_parameters/*.yaml')),
+        (os.path.join('share', package_name, 'config', 'mission'), glob('asl_rover_offboard/config/mission/*.yaml')),
         (os.path.join('share', package_name, 'model', 'urdf'), glob('asl_rover_offboard/model/urdf/*.urdf')),
         (os.path.join('share', package_name, 'model', 'urdf','meshes'), glob('asl_rover_offboard/model/urdf/meshes/*'))
     ],
@@ -24,7 +25,7 @@ setup(
     zip_safe=True,
     maintainer='asl-simulation',
     maintainer_email='uluhancem.kaya@uta.edu',
-    description='ROS 2 PX4 control system with Backstepping Control and Offboard modes.',
+    description='ROS 2 PX4 control system with MPC and Offboard modes.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
@@ -34,6 +35,8 @@ setup(
             'mpc_controller = asl_rover_offboard.control.mpc_controller:main',
             'laser_scan_sector_filter = asl_rover_offboard.utils.laser_scan_sector_filter:main',
             'wait_px4_ready = asl_rover_offboard.utils.wait_px4_ready:main',
+            'offboard_manager_node = asl_rover_offboard.utils.offboard_manager_node:main',
+            'navigator_node = asl_rover_offboard.navigation.navigator_node:main',
         ],
     },
 )

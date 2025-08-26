@@ -1,7 +1,7 @@
 import yaml
 import os
 
-from asl_rover_offboard.utils.param_types import VehicleParams, ControlParams
+from asl_rover_offboard.utils.param_types import VehicleParams, ControlParams, MissionParams
 
 class ParamLoader:
     def __init__(self, yaml_path):
@@ -15,6 +15,17 @@ class ParamLoader:
             data = yaml.safe_load(f)
         return data.get('/**', {}).get('ros__parameters', {})
 
+    def _first(self, paths, default=None):
+        """
+        Return the first non-None from a list of nested key paths.
+        Each path is a list of keys, e.g., ["mission","goal","x"].
+        """
+        for ks in paths:
+            v = self.get_nested(ks, None)
+            if v is not None:
+                return v
+        return default
+    
     def get(self, key, default=None):
         """Generic access to a top-level parameter."""
         return self.params.get(key, default)
@@ -96,7 +107,32 @@ class ParamLoader:
             ]
         )
     
+    def get_mission_params(self) -> MissionParams:
+        # mission type
+        type = str(self._first([["mission","type"], ["type"]], "line_to")).lower()
 
+        # goal (flexible YAML shapes)
+        gx = float(self._first([["mission","goal","x"], ["mission","goal_x"], ["goal","x"]], 5.0))
+        gy = float(self._first([["mission","goal","y"], ["mission","goal_y"], ["goal","y"]], 0.0))
+        gpsi = float(self._first([["mission","goal","psi"], ["mission","goal_psi"], ["goal","psi"]], 0.0))
+
+        # timing / dynamics
+        duration = float(self._first([["mission","duration"], ["line_to","duration"]], 6.0))
+        speed = float(self._first([["mission","speed"], ["arc","speed"], ["straight","speed"]], 0.6))
+        yaw_rate = float(self._first([["mission","yaw_rate"], ["arc","yaw_rate"]], 0.3))
+        segment_distance = float(self._first([["mission","segment_distance"], ["straight","distance"]], 0.0))
+        repeat = str(self._first([["mission","repeat"], ["repeat"]], "none")).lower()
+
+        return MissionParams(
+            type=type,
+            goal_xypsi=(gx, gy, gpsi),
+            duration=duration,
+            speed=speed,
+            yaw_rate=yaw_rate,
+            segment_distance=segment_distance,
+            repeat=repeat
+        )
+    
     def as_dict(self):
         """Return full parameter dictionary."""
         return self.params

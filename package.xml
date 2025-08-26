@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>asl_rover_offboard</name>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <description>TODO: Package description</description>
   <maintainer email="uluhancem.kaya@uta.edu">asl-simulation</maintainer>
   <license>MIT</license>
@@ -13,6 +13,7 @@
   <exec_depend>scipy</exec_depend>
   <exec_depend>numpy</exec_depend>
   <exec_depend>cvxpy</exec_depend>
+  <exec_depend>asl_rover_offboard_msgs</exec_depend>
   
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

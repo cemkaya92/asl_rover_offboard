@@ -1,0 +1,14 @@
+/**:
+  ros__parameters:
+
+    mission:
+      type: "arc"          # "line_to" | "arc" | "straight"
+      goal:                # only used for "line_to"
+        x: 6.0
+        y: 1.5
+        psi: 0.0
+      duration: 10000.0        # for "line_to"
+      speed: 1.0           # for arc/straight
+      yaw_rate: 0.1        # for arc (rad/s)
+      segment_distance: 0  # >0 for finite straight; 0 = unbounded
+      repeat: "loop"       # "none" | "loop" | "pingpong"

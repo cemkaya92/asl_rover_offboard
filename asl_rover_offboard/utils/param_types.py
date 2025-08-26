@@ -27,3 +27,13 @@ class ControlParams:
     R: List[float]  # length should be NU (e.g., 4)
     R_delta: List[float]  # length should be NU (e.g., 4)
     Qf_factor: float
+
+@dataclass
+class MissionParams:
+    type: str                   # "line_to" | "arc" | "straight"
+    goal_xypsi: Tuple[float, float, float]  # (x, y, psi) for line_to
+    duration: float             # s (for line_to)
+    speed: float                # m/s (arc/straight)
+    yaw_rate: float             # rad/s (arc; 0 for straight)
+    segment_distance: float     # m (finite straight; 0 means unbounded)
+    repeat: str                 # "none" | "loop" | "pingpong"

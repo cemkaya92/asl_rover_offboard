@@ -61,6 +61,12 @@ def generate_launch_description():
             default_value='mpc_controller_asl_rover.yaml',
             description='Controller parameter file inside config/controller/'
         ),
+
+        DeclareLaunchArgument(
+            'mission_param_file',
+            default_value='utari_demo_mission_params.yaml',
+            description='Mission parameter file inside config/mission/'
+        ),
     
         Node(
             package=namePackage,
@@ -96,12 +102,36 @@ def generate_launch_description():
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
                 'controller_param_file': LaunchConfiguration('controller_param_file'),
                 'sitl_param_file': LaunchConfiguration('sitl_param_file'),
-                'trajectory_topic': '/rover/trajectory',
+                'mpc_trajectory_topic': '/rover/trajectory',
                 'world_frame': 'map'
             }]
         ),
 
-        
+        Node(
+            package=namePackage,
+            executable='offboard_manager_node',
+            name='offboard_manager_node',
+            output='screen',
+            parameters=[{
+                'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'disarm_on_trip': False,
+                'auto_reenter_after_trip': False
+            }]
+        ),
+
+        Node(
+            package=namePackage,
+            executable='navigator_node',
+            name='navigator_node',
+            output='screen',
+            parameters=[{
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'mission_param_file': LaunchConfiguration('mission_param_file'),
+                'control_frequency': 20.0,
+                'auto_start': True,
+            }],
+        ),
 
         Node(
             package='obstacle_detector',          # use the actual package you installed
@@ -170,6 +200,16 @@ def generate_launch_description():
                 'obstacle_pub_topic': '/rover/tracked_obstacles',
                 'obstacle_visual_pub_topic': '/rover/tracked_obstacles_visualization',
             }]
+        ),
+
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=[
+                '0.0', '0', '0.0', '0', '0', '0',
+                'map', 'laser'
+            ],
+            output='screen'
         )
 
     ])
