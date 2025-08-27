@@ -42,7 +42,13 @@ bridge_params = PathJoinSubstitution([
 
 
 def generate_launch_description():
+
+    ns_rover1  = LaunchConfiguration('ns_rover1')
+
+
     return LaunchDescription([
+
+        DeclareLaunchArgument('ns_rover1',   default_value='rover1'),
 
         DeclareLaunchArgument(
             'vehicle_param_file',
@@ -61,41 +67,80 @@ def generate_launch_description():
             default_value='mpc_controller_asl_rover.yaml',
             description='Controller parameter file inside config/controller/'
         ),
+
+        DeclareLaunchArgument(
+            'mission_param_file',
+            default_value='utari_demo_mission_params.yaml',
+            description='Mission parameter file inside config/mission/'
+        ),
     
         Node(
             package=namePackage,
-            executable='laser_scan_sector_filter',
-            name='laser_scan_sector_filter',
+            executable='offboard_manager_node',
+            name='offboard_manager_node',
+            namespace=ns_rover1,
             output='screen',
             parameters=[{
-                'input_topic': '/merged_scan',
-                'output_topic': '/scan_filtered',
-                'min_angle_deg': 110.0,
-                'max_angle_deg': 250.0,
-                'mode': 'mask',
+                'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'disarm_on_trip': False,
+                'auto_reenter_after_trip': False
             }]
+        ),
+
+        Node(
+            package=namePackage,
+            executable='navigator_node',
+            name='navigator_node',
+            output='screen',
+            namespace=ns_rover1,
+            parameters=[{
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'mission_param_file': LaunchConfiguration('mission_param_file'),
+                'control_frequency': 20.0,
+                'auto_start': False, 
+            }],
         ),
 
         Node(
             package=namePackage,
             executable='motor_commander',
             name='motor_commander',
+            namespace=ns_rover1,
             output='screen',
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
                 'sitl_param_file': LaunchConfiguration('sitl_param_file')
             }]
         ),
-        
+
         Node(
             package=namePackage,
             executable='mpc_controller',
             name='mpc_controller',
+            namespace=ns_rover1,
             output='screen',
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
                 'controller_param_file': LaunchConfiguration('controller_param_file'),
-                'sitl_param_file': LaunchConfiguration('sitl_param_file')
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'mpc_trajectory_topic': 'mpc/trajectory',
+                'world_frame': 'map'
+            }]
+        ),
+
+        Node(
+            package=namePackage,
+            executable='laser_scan_sector_filter',
+            name='laser_scan_sector_filter',
+            namespace=ns_rover1,
+            output='screen',
+            parameters=[{
+                'input_topic': '/rover1/merged_scan',
+                'output_topic': '/rover1/scan_filtered',
+                'min_angle_deg': 110.0,
+                'max_angle_deg': 250.0,
+                'mode': 'mask',
             }]
         ),
 
@@ -107,8 +152,8 @@ def generate_launch_description():
             name='obstacle_extractor_node',
             output='screen',
             remappings=[
-                ('scan', '/scan_filtered'),
-                ('pcl',  '/scan_filtered'),
+                ('scan', '/rover1/scan_filtered'),
+                ('pcl',  '/rover1/scan_filtered'),
             ],
             parameters=[{
                 'active': True,
@@ -128,11 +173,14 @@ def generate_launch_description():
                 'max_merge_separation': 0.2,
                 'max_merge_spread': 0.2,
                 'max_circle_radius': 0.8,
-                'radius_enlargement': 0.3,
+                'radius_enlargement': 0.5,
 
                 # IMPORTANT: don't use 'map' unless you actually have a map frame
                 # and you mean to transform into it. base_link is safer here.
                 'frame_id': 'map',
+
+                'obstacle_pub_topic': '/rover1/obstacles/raw',
+                'obstacle_visual_pub_topic': '/rover1/obstacles/raw_visualization',
             }]
         ), 
 
@@ -142,12 +190,13 @@ def generate_launch_description():
             name='obstacle_tracker_node',
             output='screen',
             remappings=[
-                #('/tracked_obstacles', '/obstacles'),
-                #('tracked_obstacles_visualization',  '/obstacles_visualization'),
+                #('/obstacles', '/rover/tracked_obstacles'),
+                #('/obstacles_visualization',  '/rover/tracked_obstacles_visualization'),
                 #('/fmu/out/vehicle_odometry',  '/fmu/out/vehicle_odometry'),
             ],
             parameters=[{
                 'active': True,
+                'compensate_robot_velocity': False,
 
                 'loop_rate': 100.0,
                 'tracking_duration': 0.5,
@@ -160,12 +209,17 @@ def generate_launch_description():
                 # IMPORTANT: don't use 'map' unless you actually have a map frame
                 # and you mean to transform into it. base_link is safer here.
                 'frame_id': 'map',
+
+                'obstacle_sub_topic': '/rover1/obstacles/raw',
+                'obstacle_pub_topic': '/rover1/obstacles/tracked',
+                'obstacle_visual_pub_topic': '/rover1/obstacles/tracked_visualization',
             }]
         ),
 
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
+            namespace=ns_rover1,
             arguments=[
                 '0.0', '0', '0.0', '0', '0', '0',
                 'map', 'laser'

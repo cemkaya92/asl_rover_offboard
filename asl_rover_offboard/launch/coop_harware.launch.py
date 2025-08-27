@@ -82,7 +82,8 @@ def generate_launch_description():
             'serial_port': LaunchConfiguration('lidar_port'), 
             'serial_baudrate': LaunchConfiguration('lidar_baud'), 
             'frame_id': 'laser',
-            'inverted': 'false'
+            'inverted': 'false',
+            'lidar_namespace': 'rover1'
         }.items()
     )
 
