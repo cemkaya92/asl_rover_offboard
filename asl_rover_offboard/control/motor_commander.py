@@ -1,7 +1,10 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+
 import numpy as np
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, UInt8
 from px4_msgs.msg import ActuatorMotors
 
 from asl_rover_offboard.utils.param_loader import ParamLoader
@@ -9,7 +12,7 @@ from asl_rover_offboard.utils.param_loader import ParamLoader
 
 from ament_index_python.packages import get_package_share_directory
 import os
-
+import signal, time
 
 
 class MotorCommander(Node):
@@ -32,6 +35,11 @@ class MotorCommander(Node):
         sitl_yaml = ParamLoader(sitl_yaml_path)
         vehicle_yaml = ParamLoader(vehicle_yaml_path)
 
+        # Topics
+        nav_state_topic = sitl_yaml.get_topic("nav_state_topic")
+        actuator_control_topic = sitl_yaml.get_topic("actuator_control_topic")
+        control_command_topic = sitl_yaml.get_topic("control_command_topic")
+
         # Vehicle parameters
         self.vehicle_params = vehicle_yaml.get_vehicle_params()
 
@@ -40,19 +48,37 @@ class MotorCommander(Node):
         self.max_wheel_speed = self.vehicle_params.max_linear_speed / self.R
         self.max_angular_speed_rad_s = self.vehicle_params.max_angular_speed * np.pi / 180.0 # rad/s
 
-   
+        self.allow_commands = False  # start in IDLE
 
-        # pub / sub
-        self.motor_pub = self.create_publisher(ActuatorMotors, sitl_yaml.get_topic("actuator_control_topic"), 10)
+        # QOS Options
+        plan_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,  # <-- latch last message
+        )
+
+        # pub 
+        self.motor_pub = self.create_publisher(ActuatorMotors, actuator_control_topic, 10)
         
-        self.create_subscription(Float32MultiArray, sitl_yaml.get_topic("control_command_topic"), self._control_cmd_callback, 10)
+        # sub
+        self.create_subscription(Float32MultiArray, control_command_topic, self._control_cmd_callback, 10)
+        self.create_subscription(UInt8, nav_state_topic, self._on_nav_state, plan_qos)
 
 
         # initial states
         self.latest_motor_cmd = ActuatorMotors()
-        self.latest_motor_cmd.control = [0.0] * 12
+        self.latest_motor_cmd.control = [self.vehicle_params.zero_position_armed, 
+                                         self.vehicle_params.zero_position_armed] + [0.0] * 10
 
-        
+        # a ready-to-send neutral msg
+        self._neutral_msg = ActuatorMotors()
+        self._neutral_msg.control = [self.vehicle_params.zero_position_armed,
+                                     self.vehicle_params.zero_position_armed] + [0.0] * 10
+
+
+        # ------------------------------------
+
         # static allocation matrices
         # self.get_logger().info("[mixing_matrix] =\n" + np.array2string(mixing_matrix, precision=10, suppress_small=True))
         # self.get_logger().info("[mixing_matrix_inv] =\n" + np.array2string(self.throttles_to_normalized_torques_and_thrust, precision=10, suppress_small=True))
@@ -64,6 +90,13 @@ class MotorCommander(Node):
 
 
 
+    # ---------- callbacks ----------
+    def _on_nav_state(self, msg: UInt8):
+        self.allow_commands = (int(msg.data) == 2)   # 2 = MISSION
+        if not self.allow_commands:
+            self._set_latest_to_neutral()
+            
+
     def _motor_command_timer_callback(self):
         #a=0.0
         self.motor_pub.publish(self.latest_motor_cmd)
@@ -71,9 +104,11 @@ class MotorCommander(Node):
         #self.get_logger().info(f"latest_motor_cmd= {self.latest_motor_cmd}")
 
 
-
     def _control_cmd_callback(self, msg):
 
+        if not self.allow_commands:
+            return
+        
         now_us = int(self.get_clock().now().nanoseconds / 1000)
 
         v_cmd =  np.clip(msg.data[0], -self.vehicle_params.max_linear_speed, self.vehicle_params.max_linear_speed)
@@ -94,14 +129,52 @@ class MotorCommander(Node):
         #self.get_logger().info(f"norm_omega_left= {self.latest_motor_cmd.control[0]} | norm_omega_right= {self.latest_motor_cmd.control[1]}")
 
 
+    # ---------- neutral helpers ----------
+    def _set_latest_to_neutral(self):
+        z = float(self.vehicle_params.zero_position_armed)
+        self.latest_motor_cmd.control[0] = z
+        self.latest_motor_cmd.control[1] = z
+
+    def _publish_neutral_once(self):
+        # call only while the context is still valid
+        self._neutral_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.motor_pub.publish(self._neutral_msg)
+
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = MotorCommander()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+
+    exe = SingleThreadedExecutor()
+    exe.add_node(node)
+
+    # trap signals so rclpy doesn't tear the context down before we burst neutral
+    shutdown = {"req": False}
+    def _sig_handler(signum, frame):
+        shutdown["req"] = True
+    signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+
+    try:
+        # spin manually so we can intercept shutdown
+        while rclpy.ok() and not shutdown["req"]:
+            exe.spin_once(timeout_sec=0.1)
+    finally:
+        # 1) immediately switch desired command to neutral
+        node._set_latest_to_neutral()
+
+        # 2) publish a short neutral burst while the context is STILL valid
+        deadline = time.time() + 0.3  # ~300 ms
+        while time.time() < deadline and rclpy.ok():
+            node._publish_neutral_once()
+            exe.spin_once(timeout_sec=0.0)  # flush any pending work
+            time.sleep(0.02)               # ~50 Hz
+
+        # 3) clean teardown
+        exe.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

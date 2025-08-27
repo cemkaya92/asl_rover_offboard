@@ -9,7 +9,9 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from typing import Optional
 
 from px4_msgs.msg import VehicleOdometry, VehicleStatus, VehicleCommandAck
-from nav_msgs.msg import Odometry
+from std_srvs.srv import Trigger
+from std_msgs.msg import UInt8
+
 from asl_rover_offboard_msgs.msg import TrajectoryPlan
 from ament_index_python.packages import get_package_share_directory
 
@@ -28,7 +30,7 @@ class NavigatorNode(Node):
         self.declare_parameter('mission_param_file', 'mission.yaml')
         self.declare_parameter('command_traj_topic', '/navigator/trajectory_setpoint')
         self.declare_parameter('control_frequency', 50.0)
-        self.declare_parameter('auto_start', True)
+        self.declare_parameter('auto_start', False)
 
         package_dir = get_package_share_directory('asl_rover_offboard')
 
@@ -44,14 +46,14 @@ class NavigatorNode(Node):
         self.freq = float(self.get_parameter('control_frequency').get_parameter_value().double_value)
         self.Ts = 1.0 / self.freq
         self.auto_start = bool(self.get_parameter('auto_start').get_parameter_value().bool_value)
-
+        
         # SITL topics
         traj_topic = sitl_yaml.get_topic("command_traj_topic")
         odom_topic = sitl_yaml.get_topic("odometry_topic")
         status_topic = sitl_yaml.get_topic("status_topic")
         command_ack_topic = sitl_yaml.get_topic("vehicle_command_ack_topic")
         trajectory_plan_topic = sitl_yaml.get_topic("trajectory_plan_topic")
-
+        nav_state_topic = sitl_yaml.get_topic("nav_state_topic")
 
         
         # Mission config
@@ -69,15 +71,12 @@ class NavigatorNode(Node):
         self.vel = np.zeros(3)
         self.rpy = np.zeros(3)
 
-        self.traj_pos: Optional[np.ndarray] = None
-        self.traj_vel: Optional[np.ndarray] = None
-        self.traj_acc: Optional[np.ndarray] = None
-        self.t_last_traj: Optional[float] = None
 
         self.got_odom = False
         self.nav_offboard = False
         self.armed = False
         self.last_ack_ok = False
+        self.start_requested = False  # set by service to allow IDLE->MISSION
 
         self.last_stamp_us: int | None = None
         
@@ -87,12 +86,10 @@ class NavigatorNode(Node):
         self.at_destination = False
         self.halt_condition = False
 
+        # Services
+        self.start_srv = self.create_service(Trigger, 'navigator/start_mission', self._srv_start_mission)
+        self.halt_srv  = self.create_service(Trigger, 'navigator/halt_mission',  self._srv_halt_mission)
 
-        # Command retry state
-        self.offboard_requested = False
-        self.arm_requested = False
-        self.last_cmd_time = self.get_clock().now()
-        self.cmd_period = 0.4  # seconds between retries
 
         # ------- IO -------
         qos = QoSProfile(
@@ -109,6 +106,13 @@ class NavigatorNode(Node):
             depth=10,
         )
 
+        plan_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,  # <-- latch last message
+        )
+
         self.create_subscription(VehicleOdometry, odom_topic, self._odom_cb, qos)
         self.create_subscription(VehicleStatus, status_topic, self._on_status, qos_sensor)
         self.create_subscription(VehicleCommandAck, command_ack_topic, self._on_ack, 10)
@@ -116,8 +120,9 @@ class NavigatorNode(Node):
 
         # publisher lives in TrajectoryManager.publish_traj(); 
         self.traj_pub = self.create_publisher(TrajMsg, traj_topic, 10)
-        self.plan_pub = self.create_publisher(TrajectoryPlan, trajectory_plan_topic, 10)
-
+        self.plan_pub = self.create_publisher(TrajectoryPlan, trajectory_plan_topic, plan_qos)
+        self.nav_state_pub = self.create_publisher(UInt8, nav_state_topic, plan_qos)
+        
         # timers
         self.timer = self.create_timer(self.Ts, self._tick)
         self.get_logger().info("NavigatorNode ready.")
@@ -128,7 +133,10 @@ class NavigatorNode(Node):
         self.last_stamp_us = int(msg.timestamp)
         self.pos = np.array(msg.position, float)
         self.vel = np.array(msg.velocity, float)
-        self.rpy = self._quat_to_eul(np.array([msg.q[0],msg.q[1],msg.q[2],msg.q[3]], float))
+        self.rpy[2],self.rpy[1],self.rpy[0] = self._quat_to_eul(np.array([msg.q[0],msg.q[1],msg.q[2],msg.q[3]], float))
+        
+        #self.get_logger().info(f"self.rpy: {self.rpy}")
+
         if not self.got_odom:
             self.got_odom = True
             self.get_logger().info("First odometry received.")
@@ -151,19 +159,20 @@ class NavigatorNode(Node):
     # ---------- main loop ----------
     def _tick(self):
         if not self.got_odom:
+            self._publish_nav_state()
             return
 
         # Ensure a plan exists (so trajectory_fresh can gate IDLE->MISSION)
         if self.auto_start and not self.plan_created:
+            # legacy behavior: plan and start immediately
             self._plan_mission()
             self.plan_created = True
-            self.trajectory_fresh = True  # one-shot flag to allow transition
+            self.trajectory_fresh = True
 
-        # events
-        
+        # events        
         ev = NavEvents(
             have_odom=self.got_odom,
-            auto_start=self.auto_start,
+            auto_start=(self.auto_start or self.start_requested),
             trajectory_fresh=self.trajectory_fresh,
             at_destination=self.at_destination,
             halt_condition=self.halt_condition
@@ -177,6 +186,12 @@ class NavigatorNode(Node):
             # clear freshness once we enter MISSION
             if state == NavState.MISSION:
                 self.trajectory_fresh = False
+                self.start_requested = False
+                self.halt_condition = False
+            elif state == NavState.IDLE:
+                self.halt_condition = False
+                self.plan_created = False
+            self._publish_nav_state()
 
         # Reference selection
         if state == NavState.IDLE:
@@ -249,7 +264,46 @@ class NavigatorNode(Node):
         if self.last_stamp_us is not None:
             plan_msg = self.tm.to_plan_msg(t0_us=self.last_stamp_us)
             self.plan_pub.publish(plan_msg)
-            self.get_logger().info(f"Published TrajectoryPlan(type={plan_msg.type})")
+            self.get_logger().info(f"Published TrajectoryPlan(type={plan_msg.type}, state0={plan_msg.state0})")
+
+
+
+    def _publish_nav_state(self):
+        msg = UInt8(); 
+        msg.data = self.sm.state.value  # IDLE=1, MISSION=2 
+        self.nav_state_pub.publish(msg)
+
+
+    # ---------- services ----------
+    def _srv_start_mission(self, req, resp):
+        if not self.got_odom:
+            resp.success = False
+            resp.message = "Cannot start: no odometry yet."
+            return resp
+
+        # Always (re)plan now — time-dependent mission
+        self._plan_mission()
+        self.plan_created = True
+
+        # One-shot trigger to leave IDLE on next tick
+        self.trajectory_fresh = True
+        self.start_requested = True
+
+        resp.success = True
+        resp.message = "Mission planned and start requested."
+        return resp
+
+    def _srv_halt_mission(self, req, resp):
+        # Ask the SM to go back to IDLE; we'll hold position there
+        self.halt_condition = True
+        # Clear any outstanding start request so we don't immediately re-enter
+        self.start_requested = False
+        # (optional) mark current plan as consumed
+        self.trajectory_fresh = False
+        resp.success = True
+        resp.message = "Mission halt requested."
+        return resp
+
 
     # ---------- utils ----------
     def _clock_to_t(self, stamp_us: int) -> float:

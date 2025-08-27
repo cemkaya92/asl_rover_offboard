@@ -4,7 +4,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 import numpy as np
 
 
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, UInt8
 from px4_msgs.msg import VehicleOdometry, TimesyncStatus, TrajectorySetpoint6dof
 from obstacle_detector.msg import Obstacles
 from asl_rover_offboard_msgs.msg import TrajectoryPlan
@@ -59,6 +59,7 @@ class ControllerNode(Node):
         trajectory_sub_topic = sitl_yaml.get_topic("command_traj_topic")
         trajectory_plan_topic = sitl_yaml.get_topic("trajectory_plan_topic")
         obstacle_topic = sitl_yaml.get_topic("obstacle_topic")
+        nav_state_topic = sitl_yaml.get_topic("nav_state_topic")
 
         # Controller parameters
         self.control_params = controller_yaml.get_control_params()
@@ -79,6 +80,13 @@ class ControllerNode(Node):
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
+        )
+
+        plan_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,  # <-- ask for the stored last sample
         )
 
         # Sub
@@ -105,8 +113,13 @@ class ControllerNode(Node):
         self.sub_plan = self.create_subscription(
             TrajectoryPlan,
             trajectory_plan_topic,
-            self._on_trajectory_plan, 10
-        )
+            self._on_trajectory_plan, plan_qos)
+        
+        self.sub_nav_state = self.create_subscription(
+            UInt8, 
+            nav_state_topic, 
+            self._on_nav_state, plan_qos)
+
 
         # Pub
         self.motor_cmd_pub = self.create_publisher(
@@ -138,7 +151,7 @@ class ControllerNode(Node):
         self.plan_t0_us = None
         self.plan_data = {}     # dict: coeffs/state0/speed/yaw_rate/heading/duration/repeat/distance
  
-
+        self.nav_state = 1  # IDLE by default
 
         # --- obstacle state ---
         self.obstacles_world = []     # list of {'center': np.array([x,y]), 'radius': float}
@@ -163,15 +176,7 @@ class ControllerNode(Node):
         self.get_logger().info("Controller Node initialized.")
 
 
-    def _timing(self, stamp_us):
-        t = stamp_us * 1e-6
-        if self.t0 is None:
-            self.t0 = t
-        return t - self.t0
-    
-    def _reset_t0(self, t_now):
-        self.t0 = t_now
-
+    # ---------- callbacks ----------
     def _odom_callback(self, msg):
         self.px4_timestamp = msg.timestamp
         t_now = self._timing(msg.timestamp)
@@ -192,6 +197,8 @@ class ControllerNode(Node):
         # Body-frame Angular Velocity
         self.omega_body = np.array(msg.angular_velocity)
 
+        #self.get_logger().info(f"self.rpy: {self.rpy}")
+
         if not self._odom_ready:
             self.get_logger().warn("First odometry message is received...")
             self._odom_ready = True
@@ -201,20 +208,12 @@ class ControllerNode(Node):
 
     def _trajectory_callback(self, msg):
         return
-
-    def _quat_to_eul(self, q_xyzw):
-        # PX4: [w, x, y, z]
-        from scipy.spatial.transform import Rotation as R
-        _r = R.from_quat([q_xyzw[1], q_xyzw[2], q_xyzw[3], q_xyzw[0]])
-        return _r.as_euler('ZYX', degrees=False)
-
-    def _local_to_world(self, xy: np.ndarray) -> np.ndarray:
-        """Transform (x,y) from robot frame -> world using current pose/yaw."""
-        yaw = float(self.rpy[2])
-        c, s = np.cos(yaw), np.sin(yaw)
-        xw = self.pos[0] + c*xy[0] - s*xy[1]
-        yw = self.pos[1] + s*xy[0] + c*xy[1]
-        return np.array([xw, yw], dtype=float)
+    
+    def _on_nav_state(self, msg: UInt8):
+        self.nav_state = int(msg.data)
+        if self.nav_state != 2:          # 2 = MISSION
+            self._trajectory_ready = False
+            self.u_prev = np.array([0.0, 0.0])
     
     def _obstacles_callback(self, msg: Obstacles):
         obs_list = []
@@ -280,121 +279,15 @@ class ControllerNode(Node):
             "distance": float(msg.distance),
         }
         self._trajectory_ready = True
-        self.get_logger().info(f"TrajectoryPlan received: type={self.plan_type}")
+        self.get_logger().info(f"TrajectoryPlan received: type={self.plan_type}, data={self.plan_data}")
 
-    # --- local evaluator for one time sample (absolute PX4 time, in seconds) ---
-    def _eval_plan_abs(self, t_abs_s: float):
-        if not self._trajectory_ready or self.plan_t0_us is None:
-            return None, None, None
-        tau = max(0.0, t_abs_s - (self.plan_t0_us * 1e-6))
-
-        _type = (self.plan_type or "").lower()
-        meta = self.plan_data
-        st0 = meta["state0"]  # [x,y,psi, xd,yd,psid, xdd,ydd,psidd]
-        x0, y0, psi0 = st0[0], st0[1], st0[2]
-
-        if _type == "min_jerk" and meta["coeffs"] is not None:
-            C = meta["coeffs"]  # (3,6)
-            def mj_eval(c, t):
-                a0,a1,a2,a3,a4,a5 = c
-                t2,t3,t4,t5 = t*t, t*t*t, t*t*t*t, t*t*t*t*t
-                p = a0 + a1*t + a2*t2 + a3*t3 + a4*t4 + a5*t5
-                v = a1 + 2*a2*t + 3*a3*t2 + 4*a4*t3 + 5*a5*t4
-                a = 2*a2 + 6*a3*t + 12*a4*t2 + 20*a5*t3
-                return p, v, a
-            px,vx,ax = mj_eval(C[0], tau)
-            py,vy,ay = mj_eval(C[1], tau)
-            ppsi,vpsi,apsi = mj_eval(C[2], tau)
-            p = np.array([px, py, ppsi]); v = np.array([vx, vy, vpsi]); a = np.array([ax, ay, apsi])
-            return p, v, a
-
-        elif _type == "arc":
-            v = meta["speed"]; w = meta["yaw_rate"]
-            if abs(w) < 1e-6:
-                # straight as arc limit
-                c,s = np.cos(psi0), np.sin(psi0)
-                x = x0 + v*tau*c; y = y0 + v*tau*s; psi = psi0
-                xd,yd,psid = v*c, v*s, 0.0
-                xdd,ydd,psidd = 0.0, 0.0, 0.0
-                return np.array([x,y,psi]), np.array([xd,yd,psid]), np.array([xdd,ydd,psidd])
-            R = v / w
-            psi = psi0 + w*tau
-            s0,c0 = np.sin(psi0), np.cos(psi0)
-            s,c = np.sin(psi), np.cos(psi)
-            x = x0 + R*(s - s0)
-            y = y0 - R*(c - c0)
-            xd,yd,psid = v*c, v*s, w
-            xdd,ydd,psidd = -v*w*s, v*w*c, 0.0
-            return np.array([x,y,psi]), np.array([xd,yd,psid]), np.array([xdd,ydd,psidd])
-
-        elif _type == "straight":
-            v = meta["speed"]; psi = meta["heading"]
-            c,s = np.cos(psi), np.sin(psi)
-            x = x0 + v*tau*c; y = y0 + v*tau*s
-            return np.array([x,y,psi]), np.array([v*c, v*s, 0.0]), np.array([0.0,0.0,0.0])
-
-        # fallback
-        return None, None, None
     
     def _sync_callback(self, msg):
         self.px4_timestamp = msg.timestamp
 
-    def _build_horizon(self,x0):
-        """
-        Build xref_h (3, N+1) from the analytic trajectory and an optional obs_h (2, N+1).
-        Uses current sim time self.t_sim and controller frequency from params.
-        """
-        
-        N  = self.mpc.N
+    
 
-        # Sample trajectory over horizon
-        t0_abs = self.px4_timestamp * 1e-6
-        t_samples_abs = t0_abs + self.Ts * np.arange(N + 1)
-        psi_prev = float(x0[2])          # anchor / fallback
-        v_eps = 1e-3
-
-        xs, ys, psis_raw = [], [], []
-        for tk_abs in t_samples_abs:
-            out = self._eval_plan_abs(tk_abs)
-            if out[0] is None:
-                # no plan yet → hold
-                pos_ref = self.pos.copy()
-                vel_ref = np.zeros(3)
-            else:
-                pos_ref, vel_ref, _ = out
-
-            vx, vy = vel_ref[0], vel_ref[1]
-            # heading from velocity; hold previous if almost stopped
-            if vx*vx + vy*vy > v_eps*v_eps:
-                psi_ref = np.arctan2(vy, vx)
-                psi_prev = psi_ref
-            else:
-                psi_ref = psi_prev
-
-            xs.append(pos_ref[0])
-            ys.append(pos_ref[1])
-            psis_raw.append(psi_ref)
-
-        
-        # unwrap relative to current yaw so it's continuous across ±π
-        psi0 = float(x0[2])
-        psis_raw = np.asarray(psis_raw, dtype=float)
-        psis = np.unwrap(np.r_[psi0, psis_raw])[1:]   # keep first value aligned to psi0
-
-        xref_h = np.vstack([np.array(xs), np.array(ys), np.array(psis)])  # (3, N+1)
-
-        #self.get_logger().info(f"Ts= {self.Ts} | {self.control_params.frequency}")
-
-        # --- obstacle horizon (optional) ---
-        obs_h = None
-        if self.obs_center is not None:
-            dist = np.linalg.norm(xref_h[:2, 0] - self.obs_center)  # distance from current ref start
-            # keep it simple: only enable if close enough
-            if dist <= 8.0:
-                obs_h = np.tile(self.obs_center.reshape(2, 1), (1, N + 1))
-
-        return xref_h, obs_h
-
+    # ---------- main loop ----------
     def _control_loop(self):
         """
         Runs at a slower rate, solving the optimization problem.
@@ -407,7 +300,11 @@ class ControllerNode(Node):
         # v_curr = np.linalg.norm(self.vel[:2])  # magnitude of [vx, vy]
         _x0 = np.array([self.pos[0], self.pos[1], self.rpy[2]])
 
-        if not self._trajectory_ready:
+        if not self._trajectory_ready and self.nav_state != 2:
+            # publish hold/zero command and bail
+            msg = Float32MultiArray(); 
+            msg.data = [0.0, 0.0]
+            self.motor_cmd_pub.publish(msg)
             return
         
         xref_h, obs_h = self._build_horizon(_x0)
@@ -418,7 +315,6 @@ class ControllerNode(Node):
         #_u_mpc = np.array([1.0, 0.0])
 
         self.u_prev = _u_mpc
-
 
         #X_opt = xref_h
         self.last_ref_X  = xref_h
@@ -481,6 +377,32 @@ class ControllerNode(Node):
         # self.get_logger().info(f"x_ref={x_ref}")
         # self.get_logger().info(f"x_dif={x_ref-x0}")
 
+
+
+    # ---------- helpers ----------
+    def _timing(self, stamp_us):
+        t = stamp_us * 1e-6
+        if self.t0 is None:
+            self.t0 = t
+        return t - self.t0
+    
+    def _reset_t0(self, t_now):
+        self.t0 = t_now
+
+    def _quat_to_eul(self, q_xyzw):
+        # PX4: [w, x, y, z]
+        from scipy.spatial.transform import Rotation as R
+        _r = R.from_quat([q_xyzw[1], q_xyzw[2], q_xyzw[3], q_xyzw[0]])
+        return _r.as_euler('ZYX', degrees=False)
+
+    def _local_to_world(self, xy: np.ndarray) -> np.ndarray:
+        """Transform (x,y) from robot frame -> world using current pose/yaw."""
+        yaw = float(self.rpy[2])
+        c, s = np.cos(yaw), np.sin(yaw)
+        xw = self.pos[0] + c*xy[0] - s*xy[1]
+        yw = self.pos[1] + s*xy[0] + c*xy[1]
+        return np.array([xw, yw], dtype=float)
+
     def angle_diff(self, a, b):
         """
         Compute the wrapped difference between two angles in radians.
@@ -488,6 +410,118 @@ class ControllerNode(Node):
         Returns value in [-pi, pi]
         """
         return (a - b + np.pi) % (2 * np.pi) - np.pi
+    
+    def _build_horizon(self,x0):
+        """
+        Build xref_h (3, N+1) from the analytic trajectory and an optional obs_h (2, N+1).
+        Uses current sim time self.t_sim and controller frequency from params.
+        """
+        
+        N  = self.mpc.N
+
+        # Sample trajectory over horizon
+        t0_abs = self.px4_timestamp * 1e-6
+        t_samples_abs = t0_abs + self.Ts * np.arange(N + 1)
+        psi_prev = float(x0[2])          # anchor / fallback
+        v_eps = 1e-3
+
+        xs, ys, psis_raw = [], [], []
+        for tk_abs in t_samples_abs:
+            out = self._eval_plan_abs(tk_abs)
+            if out[0] is None:
+                # no plan yet → hold
+                pos_ref = self.pos.copy()
+                vel_ref = np.zeros(3)
+            else:
+                pos_ref, vel_ref, _ = out
+
+            vx, vy = vel_ref[0], vel_ref[1]
+            # heading from velocity; hold previous if almost stopped
+            if vx*vx + vy*vy > v_eps*v_eps:
+                psi_ref = np.arctan2(vy, vx)
+                psi_prev = psi_ref
+            else:
+                psi_ref = psi_prev
+
+            xs.append(pos_ref[0])
+            ys.append(pos_ref[1])
+            psis_raw.append(psi_ref)
+
+        
+        # unwrap relative to current yaw so it's continuous across ±π
+        psi0 = float(x0[2])
+        psis_raw = np.asarray(psis_raw, dtype=float)
+        psis = np.unwrap(np.r_[psi0, psis_raw])[1:]   # keep first value aligned to psi0
+
+        xref_h = np.vstack([np.array(xs), np.array(ys), np.array(psis)])  # (3, N+1)
+
+        #self.get_logger().info(f"psi0= {psi0} | psis_raw= {psis_raw}")
+
+        #self.get_logger().info(f"Ts= {self.Ts} | {self.control_params.frequency}")
+
+        # --- obstacle horizon (optional) ---
+        obs_h = None
+        if self.obs_center is not None:
+            dist = np.linalg.norm(xref_h[:2, 0] - self.obs_center)  # distance from current ref start
+            # keep it simple: only enable if close enough
+            if dist <= 8.0:
+                obs_h = np.tile(self.obs_center.reshape(2, 1), (1, N + 1))
+
+        return xref_h, obs_h
+    
+    # --- local evaluator for one time sample (absolute PX4 time, in seconds) ---
+    def _eval_plan_abs(self, t_abs_s: float):
+        if not self._trajectory_ready or self.plan_t0_us is None:
+            return None, None, None
+        tau = max(0.0, t_abs_s - (self.plan_t0_us * 1e-6))
+
+        _type = (self.plan_type or "").lower()
+        meta = self.plan_data
+        st0 = meta["state0"]  # [x,y,psi, xd,yd,psid, xdd,ydd,psidd]
+        x0, y0, psi0 = st0[0], st0[1], st0[2]
+
+        if _type == "min_jerk" and meta["coeffs"] is not None:
+            C = meta["coeffs"]  # (3,6)
+            def mj_eval(c, t):
+                a0,a1,a2,a3,a4,a5 = c
+                t2,t3,t4,t5 = t*t, t*t*t, t*t*t*t, t*t*t*t*t
+                p = a0 + a1*t + a2*t2 + a3*t3 + a4*t4 + a5*t5
+                v = a1 + 2*a2*t + 3*a3*t2 + 4*a4*t3 + 5*a5*t4
+                a = 2*a2 + 6*a3*t + 12*a4*t2 + 20*a5*t3
+                return p, v, a
+            px,vx,ax = mj_eval(C[0], tau)
+            py,vy,ay = mj_eval(C[1], tau)
+            ppsi,vpsi,apsi = mj_eval(C[2], tau)
+            p = np.array([px, py, ppsi]); v = np.array([vx, vy, vpsi]); a = np.array([ax, ay, apsi])
+            return p, v, a
+
+        elif _type == "arc":
+            v = meta["speed"]; w = meta["yaw_rate"]
+            if abs(w) < 1e-6:
+                # straight as arc limit
+                c,s = np.cos(psi0), np.sin(psi0)
+                x = x0 + v*tau*c; y = y0 + v*tau*s; psi = psi0
+                xd,yd,psid = v*c, v*s, 0.0
+                xdd,ydd,psidd = 0.0, 0.0, 0.0
+                return np.array([x,y,psi]), np.array([xd,yd,psid]), np.array([xdd,ydd,psidd])
+            R = v / w
+            psi = psi0 + w*tau
+            s0,c0 = np.sin(psi0), np.cos(psi0)
+            s,c = np.sin(psi), np.cos(psi)
+            x = x0 + R*(s - s0)
+            y = y0 - R*(c - c0)
+            xd,yd,psid = v*c, v*s, w
+            xdd,ydd,psidd = -v*w*s, v*w*c, 0.0
+            return np.array([x,y,psi]), np.array([xd,yd,psid]), np.array([xdd,ydd,psidd])
+
+        elif _type == "straight":
+            v = meta["speed"]; psi = meta["heading"]
+            c,s = np.cos(psi), np.sin(psi)
+            x = x0 + v*tau*c; y = y0 + v*tau*s
+            return np.array([x,y,psi]), np.array([v*c, v*s, 0.0]), np.array([0.0,0.0,0.0])
+
+        # fallback
+        return None, None, None
 
     def _publish_trajectory(self):
         # Decide what to draw: prefer predicted trajectory, else reference
