@@ -1,0 +1,6 @@
+# deps.repos
+repositories:
+  asl_rover_offboard_msgs:
+    type: git
+    url: https://github.com/cemkaya92/asl_rover_offboard_msgs.git
+    version: main   # or a tag like v0.1.0
