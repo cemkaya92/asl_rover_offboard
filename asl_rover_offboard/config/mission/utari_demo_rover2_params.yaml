@@ -1,0 +1,37 @@
+/**:
+  ros__parameters:
+    mission:
+      type: "rounded_rectangle"        # "line_to" | "straight" | "arc" | "rounded_rectangle" | "racetrack_capsule"
+      common:
+        repeat: "loop"                 # "none" | "loop" | "pingpong"
+        # start pose handling: either use current pose or set an absolute start
+        start:
+          use_current: true            # if false, use x/y/psi below
+          x: 0.0
+          y: 0.0
+          psi: 0.0
+        speed: 1.0                     # common cruise speed (ignored for some types)
+      params:
+        # For line_to:
+        # goal_xypsi: [6.0, 0.5, 0.0]
+        # duration: 100.0
+
+        # For straight:
+        # segment_distance: 10.0       # 0 => unbounded
+
+        # For arc:
+        # radius: 3.0
+        # angle: 1.57079632679         # optional if yaw_rate given
+        # yaw_rate: 0.4                # optional if angle given
+        # cw: true
+
+        # For rounded_rectangle:
+        width: 10.0
+        height: 20.0
+        corner_radius: 1.0
+        cw: false
+
+        # For racetrack_capsule:
+        # straight_length: 8.0
+        # radius: 2.0
+        # cw: false

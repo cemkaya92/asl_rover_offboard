@@ -9,8 +9,6 @@ from px4_msgs.msg import VehicleOdometry, TimesyncStatus, TrajectorySetpoint6dof
 from obstacle_detector.msg import Obstacles
 from asl_rover_offboard_msgs.msg import TrajectoryPlan
 
-from asl_rover_offboard.guidance.trajectory import eval_traj
-
 from asl_rover_offboard.utils.mpc_solver import MPCSolver
 
 from asl_rover_offboard.utils.param_loader import ParamLoader
@@ -257,22 +255,28 @@ class ControllerNode(Node):
         self.plan_type = msg.type
         self.plan_t0_us = int(msg.t0_us)
 
-        # Robust coeffs handling: None if empty or all-NaN; else reshape (3,6)
-        coeffs_arr = np.asarray(msg.coeffs, dtype=float)
-        if coeffs_arr.size == 0 or np.all(np.isnan(coeffs_arr)):
-            coeffs_mat = None
-        else:
-            try:
-                coeffs_mat = coeffs_arr.reshape(3, 6)
-            except ValueError:
-                self.get_logger().warn(f"TrajectoryPlan.coeffs has size {coeffs_arr.size}, expected 18; ignoring.")
+        raw = np.asarray(msg.coeffs, dtype=float)
+        coeffs_mat, params = None, None
+
+        _type = (msg.type or "").lower()
+        if _type == "min_jerk":
+            if raw.size == 18:
+                coeffs_mat = raw.reshape(3, 6)
+            elif raw.size == 0 or np.all(np.isnan(raw)):
                 coeffs_mat = None
+            else:
+                self.get_logger().warn(f"TrajectoryPlan.coeffs has size {raw.size}, expected 18 for min_jerk; ignoring.")
+                coeffs_mat = None
+        else:
+            # For other plan types, treat coeffs as generic parameters
+            params = raw  # may be empty
                 
         self.plan_data = {
             "duration": float(msg.duration),
             "repeat": msg.repeat,
             "state0": np.array(msg.state0, dtype=float),
-            "coeffs": coeffs_mat,
+            "coeffs": coeffs_mat,    # only used for min_jerk
+            "params": params,        # used by new shapes
             "speed": float(msg.speed),
             "yaw_rate": float(msg.yaw_rate),
             "heading": float(msg.heading),
@@ -520,8 +524,138 @@ class ControllerNode(Node):
             x = x0 + v*tau*c; y = y0 + v*tau*s
             return np.array([x,y,psi]), np.array([v*c, v*s, 0.0]), np.array([0.0,0.0,0.0])
 
+        elif _type == "rounded_rectangle":
+            # params = [width, height, corner_radius, turn_sign(optional)]
+            P = meta.get("params", None)
+            if P is None or P.size < 3:
+                return None, None, None
+            W, H, r = float(P[0]), float(P[1]), float(P[2])
+            turn = float(P[3]) if P.size >= 4 else +1.0  # -1=CCW, +1=CW
+            v = float(meta["speed"])
+            if W <= 2*r or H <= 2*r or r <= 0.0 or abs(v) < 1e-9:
+                return None, None, None
+
+            Lx, Ly = W - 2*r, H - 2*r
+            # segment specs: (type, length_or_radius, angle_if_arc)
+            segs = [
+                ("straight", Lx, 0.0),
+                ("arc",      r,  turn*np.pi/2),
+                ("straight", Ly, 0.0),
+                ("arc",      r,  turn*np.pi/2),
+                ("straight", Lx, 0.0),
+                ("arc",      r,  turn*np.pi/2),
+                ("straight", Ly, 0.0),
+                ("arc",      r,  turn*np.pi/2),
+            ]
+            return self._eval_piecewise(segs, v, x0, y0, psi0, tau, meta.get("repeat", "loop"))
+
+        elif _type == "racetrack_capsule":
+            # params = [straight_length, radius, turn_sign(optional)]
+            P = meta.get("params", None)
+            if P is None or P.size < 2:
+                return None, None, None
+            L = float(P[0]); r = float(P[1])
+            turn = float(P[2]) if P.size >= 3 else +1.0
+            v = float(meta["speed"])
+            if r <= 0.0 or L < 0.0 or abs(v) < 1e-9:
+                return None, None, None
+
+            segs = [
+                ("straight", L, 0.0),
+                ("arc",      r, turn*np.pi),
+                ("straight", L, 0.0),
+                ("arc",      r, turn*np.pi),
+            ]
+            return self._eval_piecewise(segs, v, x0, y0, psi0, tau, meta.get("repeat", "loop"))
+
+
         # fallback
         return None, None, None
+    
+    def _eval_piecewise(self, segs, v, x0, y0, psi0, tau, repeat_mode="loop"):
+        """
+        segs: list of tuples
+        - ("straight", L, 0.0)
+        - ("arc",      r, theta)  # theta signed; >0 CCW, <0 CW
+        Constant speed v (>0 assumed along forward heading).
+        """
+        if abs(v) < 1e-9:
+            p = np.array([x0, y0, psi0]); z = np.zeros(3)
+            return p, z, z
+
+        # Precompute durations and cumulative times
+        T_list = []
+        for kind, a, b in segs:
+            if kind == "straight":
+                T_list.append(abs(a) / abs(v))
+            else:  # arc
+                r = float(a); theta = float(b)
+                if r <= 0.0 or abs(theta) < 1e-9:
+                    T_list.append(0.0)
+                else:
+                    w = abs(v) / r  # yaw rate magnitude
+                    T_list.append(abs(theta) / w)
+
+        T_tot = sum(T_list)
+        if T_tot <= 0.0:
+            p = np.array([x0, y0, psi0]); z = np.zeros(3)
+            return p, z, z
+
+        # repeat/hold behavior
+        if isinstance(repeat_mode, str) and repeat_mode.lower() == "loop":
+            t_eff = tau % T_tot
+        else:
+            t_eff = min(max(0.0, tau), T_tot)
+
+        # Walk segments to find the active one and evaluate
+        xk, yk, psik = float(x0), float(y0), float(psi0)
+        acc = 0.0
+        for (kind, a, b), T in zip(segs, T_list):
+            if t_eff <= acc + T or np.isclose(t_eff, acc + T):
+                dt = t_eff - acc
+                if kind == "straight":
+                    c, s = np.cos(psik), np.sin(psik)
+                    x = xk + v*dt*c
+                    y = yk + v*dt*s
+                    psi = psik
+                    xd, yd, psid = v*c, v*s, 0.0
+                    xdd, ydd, psidd = 0.0, 0.0, 0.0
+                    return np.array([x, y, psi]), np.array([xd, yd, psid]), np.array([xdd, ydd, psidd])
+                else:  # arc
+                    r, theta = float(a), float(b)
+                    # signed yaw rate to hit theta in time T
+                    w = np.sign(theta) * (abs(v) / r)
+                    psi = psik + w*dt
+                    s0, c0 = np.sin(psik), np.cos(psik)
+                    s1, c1 = np.sin(psi),  np.cos(psi)
+                    Rloc = v / w  # signed radius: v/w carries sign of w
+                    x = xk + Rloc * (s1 - s0)
+                    y = yk - Rloc * (c1 - c0)
+                    xd, yd, psid = v*c1, v*s1, w
+                    xdd, ydd, psidd = -v*w*s1, v*w*c1, 0.0
+                    return np.array([x, y, psi]), np.array([xd, yd, psid]), np.array([xdd, ydd, psidd])
+            # advance pose to the end of this segment and continue
+            if T > 0.0:
+                if kind == "straight":
+                    c, s = np.cos(psik), np.sin(psik)
+                    xk += v*T*c
+                    yk += v*T*s
+                    # psi unchanged
+                else:
+                    r, theta = float(a), float(b)
+                    w = np.sign(theta) * (abs(v) / r)
+                    psi_end = psik + w*T
+                    s0, c0 = np.sin(psik), np.cos(psik)
+                    s1, c1 = np.sin(psi_end), np.cos(psi_end)
+                    Rloc = v / w
+                    xk += Rloc * (s1 - s0)
+                    yk -= Rloc * (c1 - c0)
+                    psik = psi_end
+            acc += T
+
+        # Numerical fall-through: return end of last segment
+        p = np.array([xk, yk, psik]); z = np.zeros(3)
+        return p, z, z
 
     def _publish_trajectory(self):
         # Decide what to draw: prefer predicted trajectory, else reference

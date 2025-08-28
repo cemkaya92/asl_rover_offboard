@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-
+import math
 import numpy as np
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, List, Dict
 
 # ==================== Trajectory Generation ====================
 class TrajectoryGenerator:
@@ -162,6 +162,218 @@ class TrajectoryGenerator:
         self._ref_func = None
         self._traj_name = "minimum-jerk line-to"
         self._generated = True
+
+
+    def generate_piecewise_track(
+        self,
+        state_start: np.ndarray,
+        segments: List[Dict],
+        repeat: str = "loop",
+        name: str = "piecewise track",
+    ):
+        """
+        Build a single reference (p,v,a) by concatenating straight and arc segments.
+        Each segment is a dict with:
+          - type: 'straight' or 'arc'
+          - For 'straight': {'type':'straight', 'length': L, 'speed': v}
+              (moves forward L meters at constant heading)
+          - For 'arc': {'type':'arc', 'radius': R, 'angle': theta, 'speed': v}
+              (turns by signed theta radians at constant speed and curvature)
+              theta<0 => CCW (left); theta>0 => CW (right)
+        """
+        assert state_start.shape == (9,), "state_start must be (9,) [p v a]"
+        p0 = state_start[0:3].astype(float)  # x, y, psi
+        v0 = state_start[3:6].astype(float)
+        a0 = state_start[6:9].astype(float)
+
+        # Build closures for each segment, tracking start pose and duration
+        seg_funcs: List[Tuple[float, callable]] = []
+        xk, yk, psik = p0.tolist(), p0.tolist(), p0.tolist()  # not used; just a scratch note
+        xk, yk, psik = p0[0], p0[1], p0[2]
+
+        for seg in segments:
+            stype = seg["type"].lower()
+            if stype == "straight":
+                L = float(seg["length"])
+                v = float(np.clip(seg["speed"], -self._v_max, self._v_max))
+                if abs(v) < 1e-9:
+                    raise ValueError("straight segment speed must be nonzero")
+                T = abs(L / v)
+
+                cpsi, spsi = np.cos(psik), np.sin(psik)
+
+                # closure evaluates this segment from its own local time τ∈[0,T]
+                def make_straight(x0, y0, psi0, v, T):
+                    cpsi0, spsi0 = np.cos(psi0), np.sin(psi0)
+                    def _ref_tau(tau: float):
+                        # clamp for hold-at-end behavior inside segment
+                        tt = min(max(0.0, tau), T)
+                        x = x0 + v * tt * cpsi0
+                        y = y0 + v * tt * spsi0
+                        psi = psi0
+                        xd = v * cpsi0
+                        yd = v * spsi0
+                        psid = 0.0
+                        xdd = 0.0
+                        ydd = 0.0
+                        psidd = 0.0
+                        return (np.array([x, y, psi]),
+                                np.array([xd, yd, psid]),
+                                np.array([xdd, ydd, psidd]))
+                    return _ref_tau
+
+                seg_funcs.append((T, make_straight(xk, yk, psik, v, T)))
+
+                # advance the "cursor" pose to next segment start
+                xk += L * cpsi
+                yk += L * spsi
+                # heading unchanged for straight
+
+            elif stype == "arc":
+                R = float(seg["radius"])
+                theta = float(seg["angle"])
+                v = float(np.clip(seg["speed"], -self._v_max, self._v_max))
+                if R <= 0.0:
+                    raise ValueError("arc radius must be > 0")
+                if abs(v) < 1e-9:
+                    raise ValueError("arc segment speed must be nonzero")
+
+                w = v / R  # signed with v; direction controlled by theta's sign via duration
+                # We want to cover |theta| radians: duration T = |theta| / |w|
+                T = abs(theta) / abs(w)
+
+                def make_arc(x0, y0, psi0, v, w, T, theta_sign):
+                    # Use your existing constant-twist integration
+                    def _ref_tau(tau: float):
+                        tt = min(max(0.0, tau), T)
+                        psi = psi0 + np.sign(theta_sign) * abs(w) * tt
+                        Rloc = v / (np.sign(theta_sign) * abs(w))
+                        x = x0 + Rloc * (np.sin(psi) - np.sin(psi0))
+                        y = y0 - Rloc * (np.cos(psi) - np.cos(psi0))
+                        xd = v * np.cos(psi)
+                        yd = v * np.sin(psi)
+                        psid = np.sign(theta_sign) * abs(w)
+                        xdd = -v * psid * np.sin(psi)
+                        ydd =  v * psid * np.cos(psi)
+                        psidd = 0.0
+                        return (np.array([x, y, psi]),
+                                np.array([xd, yd, psid]),
+                                np.array([xdd, ydd, psidd]))
+                    return _ref_tau
+
+                seg_funcs.append((T, make_arc(xk, yk, psik, abs(v), abs(w), T, theta_sign=np.sign(theta))))
+
+                # advance pose to end of arc
+                psik = psik + theta
+                # position update using the same integration at t=T:
+                psi_end = psik
+                # Use local R with signed turn matching theta
+                w_signed = np.sign(theta) * abs(w)
+                Rloc = abs(v) / abs(w) * np.sign(theta)  # signed radius for CW/CCW
+                # Better: compute with plain formulas using start psi and theta
+                # End-point delta:
+                xk = xk + (abs(v)/abs(w)) * (np.sin(psik) - np.sin(psik - theta))
+                yk = yk - (abs(v)/abs(w)) * (np.cos(psik) - np.cos(psik - theta))
+
+            else:
+                raise ValueError(f"unknown segment type: {stype}")
+
+        # Total period
+        Ttot = sum(Ti for Ti, _ in seg_funcs)
+
+        # master ref that selects the active segment
+        def _ref_master(t: float):
+            if Ttot <= 0.0:
+                # degenerate
+                return np.array([xk, yk, psik]), np.zeros(3), np.zeros(3)
+
+            # handle repetition
+            tt, ended = self._time_map(t)  # will mod if repeat='loop'
+            # when repeat='none', _time_map clamps at T; we still need total duration
+            if self._repeat_mode == "none":
+                tt = min(tt, Ttot)
+
+            # walk the segments
+            acc = 0.0
+            for Ti, f in seg_funcs:
+                if tt <= acc + Ti or np.isclose(tt, acc + Ti):
+                    return f(tt - acc)
+                acc += Ti
+            # if we fell through due to float rounding, return end of last segment
+            return seg_funcs[-1][1](seg_funcs[-1][0])
+
+        # Register as current trajectory
+        self._duration = Ttot
+        self._repeat_mode = repeat
+        self._post_behavior = "hold"
+        self._ref_func = _ref_master
+        self._coeffs = None
+        self._traj_name = name
+        self._generated = True
+
+    def generate_rounded_rectangle(
+        self,
+        state_start: np.ndarray,
+        width: float,
+        height: float,
+        corner_radius: float,
+        speed: float,
+        cw: bool = True,
+        repeat: str = "loop",
+    ):
+        """
+        Rectangle with arc (fillet) corners.
+        - width: total in X of the centerline rectangle
+        - height: total in Y of the centerline rectangle
+        - corner_radius: fillet radius (applied at all 4 corners)
+        Requirement: width > 2r, height > 2r
+        Start heading = state_start.psi; first segment is a straight.
+        """
+        W = float(width); H = float(height); r = float(corner_radius)
+        if W <= 2*r or H <= 2*r:
+            raise ValueError("width and height must be > 2*corner_radius")
+
+        Lx = W - 2.0*r
+        Ly = H - 2.0*r
+        turn = (+1.0 if cw else -1.0)
+
+        segs = [
+            {'type':'straight', 'length': Lx, 'speed': speed},
+            {'type':'arc',      'radius': r,  'angle':  turn*math.pi/2, 'speed': speed},
+            {'type':'straight', 'length': Ly, 'speed': speed},
+            {'type':'arc',      'radius': r,  'angle':  turn*math.pi/2, 'speed': speed},
+            {'type':'straight', 'length': Lx, 'speed': speed},
+            {'type':'arc',      'radius': r,  'angle':  turn*math.pi/2, 'speed': speed},
+            {'type':'straight', 'length': Ly, 'speed': speed},
+            {'type':'arc',      'radius': r,  'angle':  turn*math.pi/2, 'speed': speed},
+        ]
+        self.generate_piecewise_track(state_start, segs, repeat=repeat, name="rounded-rectangle")
+
+    def generate_racetrack_capsule(
+        self,
+        state_start: np.ndarray,
+        straight_length: float,
+        radius: float,
+        speed: float,
+        cw: bool = True,
+        repeat: str = "loop",
+    ):
+        """
+        Two parallel straights of length L connected by semicircles of radius r.
+        Start heading = state_start.psi; first segment is a straight.
+        """
+        L = float(straight_length); r = float(radius)
+        if L < 0.0 or r <= 0.0:
+            raise ValueError("straight_length must be >= 0 and radius > 0")
+
+        turn = (+1.0 if cw else -1.0)
+        segs = [
+            {'type':'straight', 'length': L, 'speed': speed},
+            {'type':'arc',      'radius': r, 'angle':  turn*math.pi, 'speed': speed},
+            {'type':'straight', 'length': L, 'speed': speed},
+            {'type':'arc',      'radius': r, 'angle':  turn*math.pi, 'speed': speed},
+        ]
+        self.generate_piecewise_track(state_start, segs, repeat=repeat, name="capsule-oval")    
 
     def get_ref_at_time(self, t: float):
         """

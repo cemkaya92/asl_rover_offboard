@@ -55,23 +55,109 @@ class TrajectoryManager:
             "coeffs": [c.copy() for c in self.gen._coeffs],  # 3 arrays, each 6 coeffs
         }
 
-    def plan_arc(self, t_now: float, p0: np.ndarray, heading: float,
-                speed: float, yaw_rate: float,
-                duration: float | None = None, repeat: str = "loop") -> None:
-        p0 = np.asarray(p0,float).reshape(3,)
+    def plan_arc_by_angle(
+        self,
+        t_now: float,
+        p0: np.ndarray,
+        heading: float,
+        radius: float,
+        angle: float,
+        speed: float,
+        repeat: str = "loop",
+    ) -> None:
+        """
+        Arc defined by geometry: radius r and turn angle 'angle' (rad).
+        Positive angle = CW, negative = CCW. Travels at (clamped) 'speed'.
+        Computes yaw_rate = sign(angle) * (speed / r) and duration = |angle| / |yaw_rate|.
+        If omega_max requires clamping yaw_rate, duration is adjusted accordingly.
+        """
+
+        p0 = np.asarray(p0, float).reshape(3,)
         state0 = np.array([p0[0], p0[1], float(heading), 0, 0, 0, 0, 0, 0])
-        self.gen.generate_circular_trajectory(state0, speed=speed, yaw_rate=yaw_rate,
-                                            duration=duration, repeat=repeat)
+
+        # Clamp speed to the generator's limits (to keep math consistent with what will run)
+        v_max = float(self.gen._v_max)
+        w_max = float(self.gen._omega_max)
+        v = float(np.clip(speed, -v_max, v_max))
+
+        if radius <= 0.0:
+            raise ValueError("plan_arc_by_angle: radius must be > 0")
+
+        # Desired yaw_rate from geometry (sign from angle)
+        w_des = np.sign(angle) * (abs(v) / float(radius))
+
+        # Enforce omega limit; if we clamp yaw rate, recompute duration
+        w = float(np.clip(w_des, -w_max, w_max))
+        # Duration needed to sweep the requested angle with the actual yaw rate
+        T = (abs(angle) / max(abs(w), 1e-9))
+
+        # Generate
+        self.gen.generate_circular_trajectory(
+            state0, speed=v, yaw_rate=w, duration=T, repeat=repeat
+        )
+
         self.plan_active = True
         self._plan_start_time = float(t_now)
 
         self._plan_type = "arc"
         self._plan_meta = {
             "repeat": repeat,
-            "duration": duration,
+            "duration": float(T),
             "state0": state0.copy(),
-            "speed": float(speed),
-            "yaw_rate": float(yaw_rate),
+            "speed": float(v),
+            "yaw_rate": float(w),
+            # optional bookkeeping if you want to export geometry later:
+            "radius": float(radius),
+            "angle": float(angle),
+            "heading": float(heading),
+        }
+
+
+    def plan_arc_by_rate(
+        self,
+        t_now: float,
+        p0: np.ndarray,
+        heading: float,
+        radius: float,            # kept for API symmetry (not strictly required here)
+        yaw_rate: float,
+        speed: float,
+        duration: float | None = None,
+        repeat: str = "loop",
+    ) -> None:
+        """
+        Arc defined by kinematics: constant yaw_rate and speed.
+        If 'duration' is None, it defaults to a full circle per generator behavior.
+        Note: provided 'radius' is not enforced unless your (speed, yaw_rate) satisfy v = |w| * r.
+        """
+
+        p0 = np.asarray(p0, float).reshape(3,)
+        state0 = np.array([p0[0], p0[1], float(heading), 0, 0, 0, 0, 0, 0])
+
+        v_max = float(self.gen._v_max)
+        w_max = float(self.gen._omega_max)
+        v = float(np.clip(speed, -v_max, v_max))
+        w = float(np.clip(yaw_rate, -w_max, w_max))
+
+        # If you prefer to exactly enforce the requested 'radius', you could
+        # overwrite v := |w| * radius (and clamp), but we keep 'speed' authoritative.
+
+        self.gen.generate_circular_trajectory(
+            state0, speed=v, yaw_rate=w, duration=duration, repeat=repeat
+        )
+
+        self.plan_active = True
+        self._plan_start_time = float(t_now)
+
+        self._plan_type = "arc"
+        self._plan_meta = {
+            "repeat": repeat,
+            "duration": (float("inf") if duration is None else float(duration)),
+            "state0": state0.copy(),
+            "speed": float(v),
+            "yaw_rate": float(w),
+            # optional notes:
+            "heading": float(heading),
+            "radius_hint": float(radius),
         }
 
     def plan_straight(self, t_now: float, p0: np.ndarray, heading: float,
@@ -87,13 +173,99 @@ class TrajectoryManager:
         self._plan_type = "straight"
         self._plan_meta = {
             "repeat": repeat,
-            "duration": self._duration,
+            "duration": float(self.gen._duration),
             "state0": state0.copy(),
             "speed": float(speed),
             "heading": float(heading),
             "distance": 0.0 if distance is None else float(distance),
         }
 
+    def plan_rounded_rectangle(
+        self,
+        t_now: float,
+        p0: np.ndarray,
+        heading: float,
+        width: float,
+        height: float,
+        corner_radius: float,
+        speed: float,
+        cw: bool = True,
+        repeat: str = "loop",
+    ) -> None:
+        """
+        Builds a rectangle with identical fillets at all 4 corners.
+        Start pose = (p0, heading). First segment is a straight along 'heading'.
+        Requires: width > 2*corner_radius and height > 2*corner_radius.
+        """
+        p0 = np.asarray(p0, float).reshape(3,)
+        state0 = np.array([p0[0], p0[1], float(heading), 0, 0, 0, 0, 0, 0])
+
+        # relies on TrajectoryGenerator.generate_rounded_rectangle(...)
+        self.gen.generate_rounded_rectangle(
+            state_start=state0,
+            width=float(width),
+            height=float(height),
+            corner_radius=float(corner_radius),
+            speed=float(speed),
+            cw=bool(cw),
+            repeat=repeat,
+        )
+
+        self.plan_active = True
+        self._plan_start_time = float(t_now)
+        self._plan_type = "rounded_rectangle"
+        self._plan_meta = {
+            "repeat": repeat,
+            "duration": float(self.gen._duration),
+            "state0": state0.copy(),
+            "width": float(width),
+            "height": float(height),
+            "corner_radius": float(corner_radius),
+            "speed": float(speed),
+            "cw": bool(cw),
+        }
+
+
+    def plan_racetrack_capsule(
+        self,
+        t_now: float,
+        p0: np.ndarray,
+        heading: float,
+        straight_length: float,
+        radius: float,
+        speed: float,
+        cw: bool = True,
+        repeat: str = "loop",
+    ) -> None:
+        """
+        Two parallel straights of length L connected by semicircles of radius r.
+        Start pose = (p0, heading). First segment is a straight along 'heading'.
+        """
+        p0 = np.asarray(p0, float).reshape(3,)
+        state0 = np.array([p0[0], p0[1], float(heading), 0, 0, 0, 0, 0, 0])
+
+        # relies on TrajectoryGenerator.generate_racetrack_capsule(...)
+        self.gen.generate_racetrack_capsule(
+            state_start=state0,
+            straight_length=float(straight_length),
+            radius=float(radius),
+            speed=float(speed),
+            cw=bool(cw),
+            repeat=repeat,
+        )
+
+        self.plan_active = True
+        self._plan_start_time = float(t_now)
+        self._plan_type = "racetrack_capsule"
+        self._plan_meta = {
+            "repeat": repeat,
+            "duration": float(self.gen._duration),
+            "state0": state0.copy(),
+            "straight_length": float(straight_length),
+            "radius": float(radius),
+            "speed": float(speed),
+            "cw": bool(cw),
+        }
 
     # ---------- references ----------
     def get_plan_ref(self, t_now: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -162,24 +334,43 @@ class TrajectoryManager:
         pm = TrajectoryPlan()
         pm.header.stamp = rclpy.clock.Clock().now().to_msg()
         pm.type = self._plan_type
-        pm.t0_us = float(int(t0_us))
-        pm.duration = float(self._plan_meta.get("duration", 0.0))
-        pm.repeat = str(self._plan_meta.get("repeat", "none"))
+        pm.t0_us = float(t0_us)
 
-        st0 = self._plan_meta.get("state0", np.zeros(9))
-        pm.state0 = np.asarray(st0, float).tolist()
+        meta = self._plan_meta or {}
+        pm.state0   = meta.get("state0", np.zeros(9)).tolist()
+        pm.duration = float(meta.get("duration", 0.0))
+        pm.repeat   = str(meta.get("repeat", "none"))
+        pm.speed    = float(meta.get("speed", 0.0))
+        pm.heading  = float(meta.get("heading", 0.0))
+        pm.yaw_rate = float(meta.get("yaw_rate", 0.0))
+        pm.distance = float(meta.get("distance", 0.0))
 
-        # coeffs (min_jerk)
-        coeffs = self._plan_meta.get("coeffs", None)
-        if coeffs is not None:
-            C = np.vstack([coeffs[0], coeffs[1], coeffs[2]]).reshape(-1)  # (18,)
-            pm.coeffs = C.tolist()
+        # min-jerk keeps 18 coeffs; others carry params as coeffs
+        if pm.type == "min_jerk":
+            C = self._coeffs if self._coeffs is not None else np.empty((3,6))
+            pm.coeffs = C.reshape(-1).tolist()
+        elif pm.type == "rounded_rectangle":
+            # Layout: [W, H, r, turn_sign, heading, speed, 0..]
+            W = float(meta["width"])
+            H = float(meta["height"])
+            r = float(meta["corner_radius"])
+            turn = 1.0 if meta.get("cw", True) else -1.0
+            pm.coeffs = self._pad18([W, H, r, turn, pm.heading, pm.speed])
+        elif pm.type == "racetrack_capsule":
+            # Layout: [L, r, turn_sign, heading, speed, 0..]
+            L = float(meta["straight_length"])
+            r = float(meta["radius"])
+            turn = 1.0 if meta.get("cw", True) else -1.0
+            pm.coeffs = self._pad18([L, r, turn, pm.heading, pm.speed])
         else:
-            pm.coeffs = [float("nan")] * 18
+            # For other non-min-jerk types that don’t need params
+            pm.coeffs = self._pad18([])
 
-        # primitives
-        pm.speed = float(self._plan_meta.get("speed", 0.0))
-        pm.yaw_rate = float(self._plan_meta.get("yaw_rate", 0.0))
-        pm.heading = float(self._plan_meta.get("heading", 0.0))
-        pm.distance = float(self._plan_meta.get("distance", 0.0))
         return pm
+    
+    
+    def _pad18(self, values):
+        vals = [float(v) for v in values]
+        if len(vals) > 18:
+            vals = vals[:18]
+        return vals + [0.0] * (18 - len(vals))

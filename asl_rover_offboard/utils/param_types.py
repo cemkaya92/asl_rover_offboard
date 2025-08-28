@@ -1,7 +1,12 @@
 # param_types.py
 
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Literal, Optional, Tuple, Union, List
+
+Repeat = Literal["none", "loop", "pingpong"]
+MissionType = Literal[
+    "line_to", "straight", "arc", "rounded_rectangle", "racetrack_capsule"
+]
 
 @dataclass
 class VehicleParams:
@@ -28,12 +33,59 @@ class ControlParams:
     R_delta: List[float]  # length should be NU (e.g., 4)
     Qf_factor: float
 
+# -------- MISSION RELATED DATA CLASSES ---------
+# ---------------- Shared blocks ----------------
 @dataclass
-class MissionParams:
-    type: str                   # "line_to" | "arc" | "straight"
-    goal_xypsi: Tuple[float, float, float]  # (x, y, psi) for line_to
-    duration: float             # s (for line_to)
-    speed: float                # m/s (arc/straight)
-    yaw_rate: float             # rad/s (arc; 0 for straight)
-    segment_distance: float     # m (finite straight; 0 means unbounded)
-    repeat: str                 # "none" | "loop" | "pingpong"
+class StartPose:
+    use_current: bool = True
+    x: float = 0.0
+    y: float = 0.0
+    psi: float = 0.0  # radians
+
+@dataclass
+class Common:
+    repeat: Repeat = "none"
+    start: StartPose = StartPose()
+    speed: Optional[float] = None  # m/s (may be unused by some types)
+
+# ---------------- Variants ----------------
+@dataclass
+class LineTo:
+    type: Literal["line_to"] = "line_to"
+    common: Common = Common()
+    goal_xypsi: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    duration: float = 0.0  # seconds
+
+@dataclass
+class Straight:
+    type: Literal["straight"] = "straight"
+    common: Common = Common()
+    segment_distance: float = 0.0  # m, 0 => unbounded
+
+@dataclass
+class Arc:
+    type: Literal["arc"] = "arc"
+    common: Common = Common()
+    radius: float = 1.0
+    angle: Optional[float] = None   # radians; provide angle OR yaw_rate
+    yaw_rate: Optional[float] = None # rad/s
+    cw: bool = True
+
+@dataclass
+class RoundedRectangle:
+    type: Literal["rounded_rectangle"] = "rounded_rectangle"
+    common: Common = Common()
+    width: float = 1.0
+    height: float = 1.0
+    corner_radius: float = 0.1
+    cw: bool = True
+
+@dataclass
+class RacetrackCapsule:
+    type: Literal["racetrack_capsule"] = "racetrack_capsule"
+    common: Common = Common()
+    straight_length: float = 1.0
+    radius: float = 0.5
+    cw: bool = True
+
+Mission = Union[LineTo, Straight, Arc, RoundedRectangle, RacetrackCapsule]

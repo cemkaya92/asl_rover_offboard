@@ -19,7 +19,9 @@ from asl_rover_offboard.utils.param_loader import ParamLoader
 from asl_rover_offboard.navigation.state_machine import NavState, NavStateMachine, NavEvents
 from asl_rover_offboard.guidance.trajectory_manager import TrajectoryManager, TrajMsg
 
-
+from asl_rover_offboard.utils.param_types import (
+    LineTo, Straight, Arc, RoundedRectangle, RacetrackCapsule
+)
 
 class NavigatorNode(Node):
     def __init__(self):
@@ -57,7 +59,7 @@ class NavigatorNode(Node):
 
         
         # Mission config
-        self.mission = mission_yaml.get_mission_params()
+        self.mission = mission_yaml.get_mission()
 
         # ------- components -------
         self.sm = NavStateMachine()
@@ -222,40 +224,33 @@ class NavigatorNode(Node):
     # -------------------- planning --------------------
     def _plan_mission(self):
         """Plan according to mission params. Called once when odom first arrives."""
-        t = self.t_sim
-        typ = self.mission.type
+        m = self.mission
 
-        if typ == "line_to":
-            p0 = self.pos.copy()
-            v0 = self.vel.copy()
-            goal = self.mission.goal_xypsi.copy()  # [x,y,psi], psi is optional for our generator
-            T = float(max(0.5, self.mission.duration))
-            self.tm.plan_min_jerk(t_now=t, p0=p0, v0=v0, p1=goal[:3], v1=np.zeros(3), T=T, repeat="none")
-
-        elif typ == "arc":
-            # constant-twist arc (indefinite by default with repeat="loop")
+        # choose start pose
+        if m.common.start.use_current:
+            p0 = np.array([self.pos[0], self.pos[1], 0.0])
             heading = float(self.rpy[2])
-            self.tm.plan_arc(
-                t_now=t, p0=np.array([self.pos[0], self.pos[1], 0.0]),
-                heading=heading,
-                speed=self.mission.speed,
-                yaw_rate=self.mission.yaw_rate,
-                duration=np.inf,                    # one full loop if yaw_rate!=0; otherwise ∞ straight
-                repeat=self.mission.repeat or "loop"
-            )
+        else:
+            p0 = np.array([m.common.start.x, m.common.start.y, 0.0])
+            heading = float(m.common.start.psi)
 
-        elif typ == "straight":
-            heading = float(self.rpy[2])
-            # If a finite segment is desired, set distance; else duration=None + repeat="none"/"loop"
-            dist = float(self.mission.segment_distance) if self.mission.segment_distance > 0.0 else None
-            self.tm.plan_straight(
-                t_now=t, p0=np.array([self.pos[0], self.pos[1], 0.0]),
-                heading=heading,
-                speed=self.mission.speed,
-                distance=dist,
-                duration=None if dist is not None else None,
-                repeat=self.mission.repeat
-            )
+        if isinstance(m, LineTo):
+            self.tm.plan_line_to(self.t_sim, p0, heading, m.goal_xypsi, m.duration, m.common.repeat)
+        elif isinstance(m, Straight):
+            self.tm.plan_straight(self.t_sim, p0, heading, m.segment_distance, float(m.common.speed or 0.0), m.common.repeat)
+        elif isinstance(m, Arc):
+            if m.angle is not None:
+                self.tm.plan_arc_by_angle(self.t_sim, p0, heading, m.radius, (+1 if m.cw else -1)*abs(m.angle),
+                                        float(m.common.speed or 0.0), m.common.repeat)
+            else:
+                self.tm.plan_arc_by_rate(self.t_sim, p0, heading, m.radius, (+1 if m.cw else -1)*abs(m.yaw_rate),
+                                        float(m.common.speed or 0.0), m.common.repeat)
+        elif isinstance(m, RoundedRectangle):
+            self.tm.plan_rounded_rectangle(self.t_sim, p0, heading, m.width, m.height, m.corner_radius,
+                                        float(m.common.speed or 0.0), m.cw, m.common.repeat)
+        elif isinstance(m, RacetrackCapsule):
+            self.tm.plan_racetrack_capsule(self.t_sim, p0, heading, m.straight_length, m.radius,
+                                        float(m.common.speed or 0.0), m.cw, m.common.repeat)
         else:
             self.get_logger().warn(f"Unknown mission.type='{self.mission.mission_type}', staying IDLE.")
 

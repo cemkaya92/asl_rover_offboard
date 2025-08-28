@@ -42,6 +42,7 @@ class OffboardManagerNode(Node):
         self.declare_parameter('sitl_param_file', 'sitl_param.yaml')
         self.declare_parameter('disarm_on_trip', False)
         self.declare_parameter('auto_reenter_after_trip', False)  # (default: NO auto re-entry)
+        self.declare_parameter('sys_id', 1)
 
         package_dir = get_package_share_directory('asl_rover_offboard')
 
@@ -49,6 +50,7 @@ class OffboardManagerNode(Node):
         sitl_param_file = self.get_parameter('sitl_param_file').get_parameter_value().string_value
         self.disarm_on_trip = bool(self.get_parameter('disarm_on_trip').get_parameter_value().bool_value)
         self.auto_reenter_after_trip = bool(self.get_parameter('auto_reenter_after_trip').get_parameter_value().bool_value)
+        self.sys_id = int(self.get_parameter('sys_id').get_parameter_value().integer_value)
 
         sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', sitl_param_file)
         vehicle_yaml_path = os.path.join(package_dir, 'config', 'vehicle_parameters', vehicle_param_file)
@@ -63,7 +65,7 @@ class OffboardManagerNode(Node):
         vehicle_command_ack_topic = sitl_yaml.get_topic("vehicle_command_ack_topic")
         control_cmd_topic = sitl_yaml.get_topic("control_command_topic")
         offboard_control_topic = sitl_yaml.get_topic("offboard_control_topic")
-        self.sys_id = sitl_yaml.get_nested(["sys_id"], 1)
+
 
         # pubs
         self.cmd_pub = self.create_publisher(VehicleCommand, vehicle_command_topic, 10)
@@ -116,7 +118,7 @@ class OffboardManagerNode(Node):
         self.offboard_blocked = False     # global disable (also set on trip)
 
 
-        self.get_logger().info("OffboardManagerNode initialized")
+        self.get_logger().info(f"OffboardManagerNode initialized with sys_id={self.sys_id}")
 
         # timers
         self.keepalive_timer = self.create_timer(0.1, self._publish_offboard_keepalive)  # 10 Hz

@@ -1,7 +1,10 @@
 import yaml
 import os
 
-from asl_rover_offboard.utils.param_types import VehicleParams, ControlParams, MissionParams
+from asl_rover_offboard.utils.param_types import (
+    VehicleParams, ControlParams, Mission, LineTo, Straight, Arc, RoundedRectangle, RacetrackCapsule,
+    Common, StartPose
+)
 
 class ParamLoader:
     def __init__(self, yaml_path):
@@ -107,31 +110,56 @@ class ParamLoader:
             ]
         )
     
-    def get_mission_params(self) -> MissionParams:
-        # mission type
-        type = str(self._first([["mission","type"], ["type"]], "line_to")).lower()
+    def get_mission(self) -> Mission:
+        """Parse modern nested mission schema -> Mission variant."""
+        mroot = self.get("mission", {}) or {}
+        mtype = str(mroot.get("type", "line_to")).lower()
+        common = mroot.get("common", {}) or {}
+        start  = (common.get("start", {}) or {})
+        params = mroot.get("params", {}) or {}
 
-        # goal (flexible YAML shapes)
-        gx = float(self._first([["mission","goal","x"], ["mission","goal_x"], ["goal","x"]], 5.0))
-        gy = float(self._first([["mission","goal","y"], ["mission","goal_y"], ["goal","y"]], 0.0))
-        gpsi = float(self._first([["mission","goal","psi"], ["mission","goal_psi"], ["goal","psi"]], 0.0))
-
-        # timing / dynamics
-        duration = float(self._first([["mission","duration"], ["line_to","duration"]], 6.0))
-        speed = float(self._first([["mission","speed"], ["arc","speed"], ["straight","speed"]], 0.6))
-        yaw_rate = float(self._first([["mission","yaw_rate"], ["arc","yaw_rate"]], 0.3))
-        segment_distance = float(self._first([["mission","segment_distance"], ["straight","distance"]], 0.0))
-        repeat = str(self._first([["mission","repeat"], ["repeat"]], "none")).lower()
-
-        return MissionParams(
-            type=type,
-            goal_xypsi=(gx, gy, gpsi),
-            duration=duration,
-            speed=speed,
-            yaw_rate=yaw_rate,
-            segment_distance=segment_distance,
-            repeat=repeat
+        c = Common(
+            repeat=str(common.get("repeat", "none")).lower(),  # none|loop|pingpong
+            start=StartPose(
+                bool(start.get("use_current", True)),
+                float(start.get("x", 0.0)),
+                float(start.get("y", 0.0)),
+                float(start.get("psi", 0.0)),
+            ),
+            speed=None if common.get("speed") is None else float(common["speed"]),
         )
+
+        if mtype == "line_to":
+            g = params.get("goal_xypsi", [0.0, 0.0, 0.0])
+            return LineTo(common=c, goal_xypsi=(float(g[0]), float(g[1]), float(g[2])),
+                          duration=float(params.get("duration", 0.0)))
+
+        if mtype == "straight":
+            return Straight(common=c, segment_distance=float(params.get("segment_distance", 0.0)))
+
+        if mtype == "arc":
+            ang = params.get("angle"); ang = None if ang is None else float(ang)
+            yr  = params.get("yaw_rate"); yr = None if yr is None else float(yr)
+            if ang is None and yr is None:
+                raise ValueError("arc mission: provide one of {angle, yaw_rate}")
+            return Arc(common=c, radius=float(params["radius"]), angle=ang, yaw_rate=yr,
+                       cw=bool(params.get("cw", True)))
+
+        if mtype == "rounded_rectangle":
+            W = float(params["width"]); H = float(params["height"]); r = float(params["corner_radius"])
+            if W <= 2*r or H <= 2*r:
+                raise ValueError("rounded_rectangle: width/height must be > 2*corner_radius")
+            return RoundedRectangle(common=c, width=W, height=H, corner_radius=r, cw=bool(params.get("cw", True)))
+
+        if mtype == "racetrack_capsule":
+            L = float(params["straight_length"]); r = float(params["radius"])
+            if r <= 0.0:
+                raise ValueError("racetrack_capsule: radius must be > 0")
+            return RacetrackCapsule(common=c, straight_length=L, radius=r, cw=bool(params.get("cw", True)))
+
+        raise ValueError(f"Unknown mission type: {mtype}")
+
+
     
     def as_dict(self):
         """Return full parameter dictionary."""
