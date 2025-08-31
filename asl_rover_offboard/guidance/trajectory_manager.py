@@ -5,7 +5,7 @@ import numpy as np
 import rclpy
 
 from px4_msgs.msg import TrajectorySetpoint6dof as TrajMsg
-from asl_rover_offboard_msgs.msg import TrajectoryPlan
+from custom_offboard_msgs.msg import TrajectoryPlan
 
 
 from asl_rover_offboard.guidance.trajectory_generator import TrajectoryGenerator

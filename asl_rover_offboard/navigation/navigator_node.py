@@ -12,7 +12,7 @@ from px4_msgs.msg import VehicleOdometry, VehicleStatus, VehicleCommandAck
 from std_srvs.srv import Trigger
 from std_msgs.msg import UInt8
 
-from asl_rover_offboard_msgs.msg import TrajectoryPlan
+from custom_offboard_msgs.msg import TrajectoryPlan
 from ament_index_python.packages import get_package_share_directory
 
 from asl_rover_offboard.utils.param_loader import ParamLoader

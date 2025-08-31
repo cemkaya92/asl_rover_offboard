@@ -124,6 +124,30 @@ class OffboardManagerNode(Node):
         self.keepalive_timer = self.create_timer(0.1, self._publish_offboard_keepalive)  # 10 Hz
 
 
+
+    # ---------- services ----------
+    def _srv_enable_offboard(self, req: SetBool.Request, res: SetBool.Response):
+        if req.data:
+            self.offboard_blocked = False
+            self.trip_latched = False
+            res.success = True
+            res.message = "Offboard enabled; latch cleared."
+            self.get_logger().info(res.message)
+        else:
+            self.offboard_blocked = True
+            res.success = True
+            res.message = "Offboard disabled."
+            self.get_logger().warn(res.message)
+        return res
+
+    def _srv_clear_trip(self, req: Trigger.Request, res: Trigger.Response):
+        self.trip_latched = False
+        res.success = True
+        res.message = "Trip latch cleared."
+        self.get_logger().info(res.message)
+        return res
+    
+    # ---------- callbacks ----------
     def _on_status(self, msg: VehicleStatus):
         try:
             OFFBOARD = VehicleStatus.NAVIGATION_STATE_OFFBOARD
@@ -161,36 +185,6 @@ class OffboardManagerNode(Node):
             self.get_logger().warn(f"ACK result {ack.result} for cmd {cmd} (param1={ack.result_param1})")
 
 
-    # ---------- services ----------
-    def _srv_enable_offboard(self, req: SetBool.Request, res: SetBool.Response):
-        if req.data:
-            self.offboard_blocked = False
-            self.trip_latched = False
-            res.success = True
-            res.message = "Offboard enabled; latch cleared."
-            self.get_logger().info(res.message)
-        else:
-            self.offboard_blocked = True
-            res.success = True
-            res.message = "Offboard disabled."
-            self.get_logger().warn(res.message)
-        return res
-
-    def _srv_clear_trip(self, req: Trigger.Request, res: Trigger.Response):
-        self.trip_latched = False
-        res.success = True
-        res.message = "Trip latch cleared."
-        self.get_logger().info(res.message)
-        return res
-    
-    # ---------- callbacks ----------
-    def _timing(self, stamp_us):
-        t = stamp_us * 1e-6
-        if self.t0 is None:
-            self.t0 = t
-        return t - self.t0
-
-
     def _odom_cb(self, msg: VehicleOdometry):
         self.px4_timestamp_us = msg.timestamp
         self.t_sim = self._timing(msg.timestamp)
@@ -208,8 +202,58 @@ class OffboardManagerNode(Node):
     def _cmd_cb(self, msg: Float32MultiArray):
         self.last_cmd = np.asarray(msg.data, dtype=float)
 
-    # Helpers
 
+    
+
+
+    # ---------- timers ----------
+    def _publish_offboard_keepalive(self):
+
+        # Always safe to publish keepalive (it does not switch modes by itself)       
+        now_us = self._now_us()
+        offboard = OffboardControlMode()
+        offboard.timestamp = now_us
+        offboard.position = False
+        offboard.velocity = False
+        offboard.acceleration = False
+        offboard.attitude = False
+        offboard.body_rate = False
+        offboard.thrust_and_torque = False
+        offboard.direct_actuator = True
+        self.offboard_ctrl_pub.publish(offboard)
+
+        # 2) Decide whether we want Offboard/Arm active
+        want_control = (not self.offboard_blocked) and (not self.trip_latched) and self.have_odom 
+
+        if not want_control:
+            self.offboard_set = False
+            return
+    
+        # 3) Stage OFFBOARD first, then ARM (with ACK + status verification)
+        if not self.nav_offboard and self._pending["offboard"] is None:
+            self._request_offboard_mode()
+
+        # Retry OFFBOARD if needed
+        self._maybe_retry("offboard")
+
+        # Once OFFBOARD is active, request ARM (if not yet armed)
+        if self.nav_offboard and (not self.armed) and self._pending["arm"] is None:
+            self._request_arm(True)
+
+        # Retry ARM if needed
+        self._maybe_retry("arm")
+
+        # 4) Consider the switch successful only when BOTH are true
+        self.offboard_set = self.nav_offboard and self.armed
+        
+
+    # ---------- Helpers ----------
+    def _timing(self, stamp_us):
+        t = stamp_us * 1e-6
+        if self.t0 is None:
+            self.t0 = t
+        return t - self.t0
+    
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
@@ -272,55 +316,14 @@ class OffboardManagerNode(Node):
                 self.get_logger().warn("Retrying ARM request…")
                 self._request_arm(True)
 
-
-    # ---------- timers ----------
-    def _publish_offboard_keepalive(self):
-
-        # Always safe to publish keepalive (it does not switch modes by itself)       
-        now_us = self._now_us()
-        offboard = OffboardControlMode()
-        offboard.timestamp = now_us
-        offboard.position = False
-        offboard.velocity = False
-        offboard.acceleration = False
-        offboard.attitude = False
-        offboard.body_rate = False
-        offboard.thrust_and_torque = False
-        offboard.direct_actuator = True
-        self.offboard_ctrl_pub.publish(offboard)
-
-        # 2) Decide whether we want Offboard/Arm active
-        want_control = (not self.offboard_blocked) and (not self.trip_latched) and self.have_odom 
-
-        if not want_control:
-            self.offboard_set = False
-            return
-    
-        # 3) Stage OFFBOARD first, then ARM (with ACK + status verification)
-        if not self.nav_offboard and self._pending["offboard"] is None:
-            self._request_offboard_mode()
-
-        # Retry OFFBOARD if needed
-        self._maybe_retry("offboard")
-
-        # Once OFFBOARD is active, request ARM (if not yet armed)
-        if self.nav_offboard and (not self.armed) and self._pending["arm"] is None:
-            self._request_arm(True)
-
-        # Retry ARM if needed
-        self._maybe_retry("arm")
-
-        # 4) Consider the switch successful only when BOTH are true
-        self.offboard_set = self.nav_offboard and self.armed
-        
-
-    # ---------- utils ----------
     @staticmethod
     def _quat_to_eul(q_wxyz: np.ndarray) -> np.ndarray:
         # PX4 gives [w, x, y, z]
         from scipy.spatial.transform import Rotation as R
         r = R.from_quat([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
         return r.as_euler('ZYX', degrees=False)  # [yaw, pitch, roll]
+    
+    
 
 def main(args=None):
     rclpy.init(args=args)

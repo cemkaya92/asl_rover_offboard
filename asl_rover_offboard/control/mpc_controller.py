@@ -7,7 +7,7 @@ import numpy as np
 from std_msgs.msg import Float32MultiArray, UInt8
 from px4_msgs.msg import VehicleOdometry, TimesyncStatus, TrajectorySetpoint6dof
 from obstacle_detector.msg import Obstacles
-from asl_rover_offboard_msgs.msg import TrajectoryPlan
+from custom_offboard_msgs.msg import TrajectoryPlan
 
 from asl_rover_offboard.utils.mpc_solver import MPCSolver
 
