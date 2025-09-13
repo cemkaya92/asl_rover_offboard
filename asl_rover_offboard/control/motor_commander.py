@@ -92,14 +92,16 @@ class MotorCommander(Node):
 
     # ---------- callbacks ----------
     def _on_nav_state(self, msg: UInt8):
-        self.allow_commands = (int(msg.data) == 2)   # 2 = MISSION
+        self.allow_commands = (int(msg.data) == 1) or ((int(msg.data) == 2))   # 1 = IDLE, 2 = MISSION
         if not self.allow_commands:
             self._set_latest_to_neutral()
             
 
     def _motor_command_timer_callback(self):
-        #a=0.0
-        self.motor_pub.publish(self.latest_motor_cmd)
+        
+        if self.allow_commands:
+            self.motor_pub.publish(self.latest_motor_cmd)
+        
 
         #self.get_logger().info(f"latest_motor_cmd= {self.latest_motor_cmd}")
 
@@ -132,6 +134,7 @@ class MotorCommander(Node):
     # ---------- neutral helpers ----------
     def _set_latest_to_neutral(self):
         z = float(self.vehicle_params.zero_position_armed)
+        self.latest_motor_cmd.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.latest_motor_cmd.control[0] = z
         self.latest_motor_cmd.control[1] = z
 

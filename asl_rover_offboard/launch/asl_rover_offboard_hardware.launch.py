@@ -118,8 +118,8 @@ def generate_launch_description():
             parameters=[{
                 'input_topic': '/rover1/merged_scan',
                 'output_topic': '/rover1/scan_filtered',
-                'min_angle_deg': 110.0,
-                'max_angle_deg': 250.0,
+                'min_angle_deg': 130.0,
+                'max_angle_deg': 230.0,
                 'mode': 'mask',
             }]
         ),
