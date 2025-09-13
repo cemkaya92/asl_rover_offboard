@@ -23,7 +23,7 @@ from asl_rover_offboard.utils.param_types import (
     LineTo, Straight, Arc, RoundedRectangle, RacetrackCapsule
 )
 
-from hydro_mpc.utils.helper_functions import quat_to_eul
+from asl_rover_offboard.utils.helper_functions import quat_to_eul
 
 class NavigatorNode(Node):
     def __init__(self):
