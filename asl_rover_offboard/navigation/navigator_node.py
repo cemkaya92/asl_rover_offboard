@@ -23,6 +23,8 @@ from asl_rover_offboard.utils.param_types import (
     LineTo, Straight, Arc, RoundedRectangle, RacetrackCapsule
 )
 
+from hydro_mpc.utils.helper_functions import quat_to_eul
+
 class NavigatorNode(Node):
     def __init__(self):
         super().__init__("navigator")
@@ -60,10 +62,16 @@ class NavigatorNode(Node):
         
         # Mission config
         self.mission = mission_yaml.get_mission()
+        ok, msg = mission_yaml.validate_mission()
+        self.mission_valid = bool(ok)
+        if not ok:
+            self.get_logger().warn(f"[Navigator] Mission invalid: {msg}")
+        else:
+            self.get_logger().info(f"[Navigator] Mission valid: {msg}")
 
         # ------- components -------
         self.sm = NavStateMachine()
-        self.tm = TrajectoryManager(v_max= 1.5, omega_max=1.0, default_T=10000.0)
+        self.tm = TrajectoryManager(v_max= 1.0, omega_max=1.0, default_T=10000.0)
 
 
         # ------- state -------
@@ -72,6 +80,7 @@ class NavigatorNode(Node):
         self.pos = np.zeros(3)
         self.vel = np.zeros(3)
         self.rpy = np.zeros(3)
+        self.omega_body = np.zeros(3)
 
 
         self.got_odom = False
@@ -88,9 +97,19 @@ class NavigatorNode(Node):
         self.at_destination = False
         self.halt_condition = False
 
-        # Services
-        self.start_srv = self.create_service(Trigger, 'navigator/start_mission', self._srv_start_mission)
-        self.halt_srv  = self.create_service(Trigger, 'navigator/halt_mission',  self._srv_halt_mission)
+        # obstacle avaidance state
+        self.in_avoidance = False
+
+        # offboard states
+        self.allow_offboard_output = True        # master gate for Offboard setpoints
+        self.in_offboard_last = None             # for logging transitions (optional)
+        self.suppress_plan_output = False
+        self.allow_offboard_output = True
+
+        # manual states
+        self.manual_requested = False
+        self._manual_true_ticks = 0
+        self._manual_false_ticks = 0
 
 
         # ------- IO -------
@@ -115,18 +134,34 @@ class NavigatorNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,  # <-- latch last message
         )
 
+        traj_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST, 
+            depth=1
+        )
+
         self.create_subscription(VehicleOdometry, odom_topic, self._odom_cb, qos)
         self.create_subscription(VehicleStatus, status_topic, self._on_status, qos_sensor)
         self.create_subscription(VehicleCommandAck, command_ack_topic, self._on_ack, 10)
 
 
         # publisher lives in TrajectoryManager.publish_traj(); 
-        self.traj_pub = self.create_publisher(TrajMsg, traj_topic, 10)
+        self.traj_pub = self.create_publisher(TrajMsg, traj_topic, traj_qos)
         self.plan_pub = self.create_publisher(TrajectoryPlan, trajectory_plan_topic, plan_qos)
         self.nav_state_pub = self.create_publisher(UInt8, nav_state_topic, plan_qos)
         
+        # Services
+        self.start_srv = self.create_service(Trigger, 'navigator/start_mission', self._srv_start_mission)
+        self.halt_srv  = self.create_service(Trigger, 'navigator/halt_mission',  self._srv_halt_mission)
+
         # timers
         self.timer = self.create_timer(self.Ts, self._tick)
+
+        # initial publishes
+        self._publish_nav_state()
+
+        # Constructor logs
         self.get_logger().info("NavigatorNode ready.")
 
     # ---------- callbacks ----------
@@ -135,9 +170,11 @@ class NavigatorNode(Node):
         self.last_stamp_us = int(msg.timestamp)
         self.pos = np.array(msg.position, float)
         self.vel = np.array(msg.velocity, float)
-        self.rpy[2],self.rpy[1],self.rpy[0] = self._quat_to_eul(np.array([msg.q[0],msg.q[1],msg.q[2],msg.q[3]], float))
-        
+        self.rpy[0],self.rpy[1],self.rpy[2] = quat_to_eul(msg.q)
         #self.get_logger().info(f"self.rpy: {self.rpy}")
+
+        # Body-frame Angular Velocity
+        self.omega_body = np.array(msg.angular_velocity, float)
 
         if not self.got_odom:
             self.got_odom = True
@@ -145,11 +182,22 @@ class NavigatorNode(Node):
 
 
     def _on_status(self, msg: VehicleStatus):
-        # NAVIGATION_STATE_OFFBOARD = 14 on recent PX4; use constant if you have it
-        NAV_OFFBOARD = 14
-        ARMING_STATE_ARMED = 2
-        self.nav_offboard = (msg.nav_state == NAV_OFFBOARD)
-        self.armed = (msg.arming_state == ARMING_STATE_ARMED)
+        self.nav_offboard = (msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD)
+        self.armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        raw_manual = (not self.nav_offboard) and self._is_manual_nav(msg.nav_state)
+
+        if raw_manual:
+            self._manual_true_ticks += 1; self._manual_false_ticks = 0
+        else:
+            self._manual_false_ticks += 1; self._manual_true_ticks = 0
+        # require stability for 2 consecutive status messages (~60 ms @ 50 Hz)
+        self.manual_requested = (self._manual_true_ticks >= 3)
+
+        # self.get_logger().info(f"manual_requested: {self.manual_requested}")
+
+        if self.nav_offboard != self.in_offboard_last:
+            self.get_logger().info(f"[Navigator] FCU mode changed: {'OFFBOARD' if self.nav_offboard else 'NOT-OFFBOARD'}")
+            self.in_offboard_last = self.nav_offboard
 
     def _on_ack(self, ack: VehicleCommandAck):
         # VEHICLE_RESULT_ACCEPTED = 0
@@ -160,66 +208,67 @@ class NavigatorNode(Node):
 
     # ---------- main loop ----------
     def _tick(self):
+
         if not self.got_odom:
             self._publish_nav_state()
             return
 
-        # Ensure a plan exists (so trajectory_fresh can gate IDLE->MISSION)
-        if self.auto_start and not self.plan_created:
-            # legacy behavior: plan and start immediately
-            self._plan_mission()
-            self.plan_created = True
-            self.trajectory_fresh = True
 
         # events        
         ev = NavEvents(
-            have_odom=self.got_odom,
-            auto_start=(self.auto_start or self.start_requested),
-            trajectory_fresh=self.trajectory_fresh,
-            at_destination=self.at_destination,
-            halt_condition=self.halt_condition
+            have_odom=bool(self.got_odom),
+            auto_start=bool(self.auto_start),
+            trajectory_fresh=bool(self.trajectory_fresh),
+            at_destination=bool(self.at_destination),
+            start_requested=bool(self.start_requested),
+            halt_condition=bool(self.halt_condition),
+            mission_valid=bool(self.mission_valid),
+            manual_requested=bool(self.manual_requested),
+            offboard_ok=bool(self.nav_offboard), 
+            in_avoidance=bool(self.in_avoidance),
         )
         prev = self.sm.state
-        state = self.sm.step(ev)
+        new = self.sm.step(ev)
 
-        # optionally log transitions
-        if prev != state:
-            self.get_logger().info(f"State: {prev.name} -> {state.name}")
-            # clear freshness once we enter MISSION
-            if state == NavState.MISSION:
-                self.trajectory_fresh = False
-                self.start_requested = False
-                self.halt_condition = False
-            elif state == NavState.IDLE:
-                self.halt_condition = False
-                self.plan_created = False
-            self._publish_nav_state()
 
-        # Reference selection
+        # plan on transitions
+        if new != prev:
+            self._on_state_change(prev, new)
+
+
+
+
+    def _on_state_change(self, prev, state):
+
+        self.get_logger().info(f"State: {prev.name} -> {state.name}")
+        self.target_plan_active = False
+
+        if state in (NavState.MISSION, NavState.IDLE, NavState.AVOIDANCE):
+            self.allow_offboard_output = True 
+            self.suppress_plan_output = False
+
+
         if state == NavState.IDLE:
-            p_ref = self.pos.copy()
-            v_ref = np.zeros(3)
-            a_ref = np.zeros(3)
+            self._clear_active_plan()
+            self.allow_offboard_output = False
+            self.suppress_plan_output = True   # tells _plan_or_hold to hover
+            self.halt_condition = False 
+            
         elif state == NavState.MISSION:
-            p_ref, v_ref, a_ref = self.tm.get_plan_ref(self.t_sim)
-            if p_ref is None:
-                # Plan ended; decide we are “at destination”
-                self.at_destination = self._arrival_check()
-                # Hold position while waiting for SM to go IDLE
-                p_ref = self.pos.copy()
-                v_ref = np.zeros(3)
-                a_ref = np.zeros(3)
-            else:
-                # While we still have a plan, keep checking arrival
-                self.at_destination = self._arrival_check()
-        else:
-            # shouldn’t happen with this SM
-            p_ref, v_ref, a_ref = self.pos.copy(), np.zeros(3), np.zeros(3)
+            self._clear_active_plan()
+            self._plan_mission()
+            self.start_requested = False # clear the flag once you are in
+            self.plan_created = True
+            self.trajectory_fresh = True
+            self.halt_condition = False 
 
-        # Publish
-        yaw_cmd = self._select_yaw(v_ref)
-        now_us = int(self.get_clock().now().nanoseconds / 1000)
-        self.tm.publish_traj(self.traj_pub, now_us, p_ref, v_ref, a_ref, yaw=yaw_cmd)
+        elif state == NavState.MANUAL:
+            self._clear_active_plan()
+            self.allow_offboard_output = False
+            self.suppress_plan_output = True
+            self.halt_condition = False
+
+        self._publish_nav_state()
 
     # -------------------- planning --------------------
     def _plan_mission(self):
@@ -263,12 +312,6 @@ class NavigatorNode(Node):
 
 
 
-    def _publish_nav_state(self):
-        msg = UInt8(); 
-        msg.data = self.sm.state.value  # IDLE=1, MISSION=2 
-        self.nav_state_pub.publish(msg)
-
-
     # ---------- services ----------
     def _srv_start_mission(self, req, resp):
         if not self.got_odom:
@@ -283,6 +326,7 @@ class NavigatorNode(Node):
         # One-shot trigger to leave IDLE on next tick
         self.trajectory_fresh = True
         self.start_requested = True
+        self.halt_condition = False
 
         resp.success = True
         resp.message = "Mission planned and start requested."
@@ -295,6 +339,8 @@ class NavigatorNode(Node):
         self.start_requested = False
         # (optional) mark current plan as consumed
         self.trajectory_fresh = False
+        self.auto_start = False            # don’t immediately leave IDLE again
+        self.suppress_plan_output = True   # force HOLD outputs
         resp.success = True
         resp.message = "Mission halt requested."
         return resp
@@ -306,19 +352,6 @@ class NavigatorNode(Node):
         if self.t0 is None:
             self.t0 = t
         return t - self.t0
-
-    @staticmethod
-    def _quat_to_eul(q_wxyz: np.ndarray) -> np.ndarray:
-        from scipy.spatial.transform import Rotation as R
-        r = R.from_quat([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
-        return r.as_euler('ZYX', degrees=False)
-
-    def _select_yaw(self, v_ref: np.ndarray) -> float:
-        # face velocity:
-        vx, vy = float(v_ref[0]), float(v_ref[1])
-        if abs(vx) + abs(vy) < 1e-3:
-            return self.rpy[2]
-        return math.atan2(vy, vx)
     
     def _arrival_check(self) -> bool:
         # If the generator says “no more plan”, or we are close in pos & slow in vel → at destination
@@ -329,6 +362,44 @@ class NavigatorNode(Node):
         v_ok = False
         # You may store final goal and check ||pos - goal|| <= tol. For now, only speed criterion:
         return v_ok
+    
+    def _publish_nav_state(self):
+        msg = UInt8(); 
+        msg.data = self.sm.state.value  # IDLE=1, MISSION=2 
+        self.nav_state_pub.publish(msg)
+
+    def _clear_active_plan(self):
+        """
+        Best-effort: clear any active plan in the TrajectoryManager if the API exists.
+        Otherwise mark our bookkeeping so we won't rely on a stale plan.
+        """
+        for fn in ("clear", "clear_plan", "reset"):
+            if hasattr(self.tm, fn):
+                try:
+                    getattr(self.tm, fn)()
+                    break
+                except Exception:
+                    pass
+        # local bookkeeping
+        self.plan_created = False
+        self.trajectory_fresh = False
+        self.at_destination = False
+
+    def _is_manual_nav(self, nav_state: int) -> bool:                           
+        VS = VehicleStatus
+        # PX4 "pilot" modes; extend if you use others
+        manual_modes = (
+            getattr(VS, "NAVIGATION_STATE_MANUAL", 0),
+            getattr(VS, "NAVIGATION_STATE_ALTCTL", 0),
+            getattr(VS, "NAVIGATION_STATE_POSCTL", 0),
+            getattr(VS, "NAVIGATION_STATE_ACRO", 0),
+            getattr(VS, "NAVIGATION_STATE_RATTITUDE", 0),
+            getattr(VS, "NAVIGATION_STATE_STAB", 0),
+        )
+
+        return nav_state in manual_modes
+    
+    
 
 def main(args=None):
     rclpy.init(args=args)

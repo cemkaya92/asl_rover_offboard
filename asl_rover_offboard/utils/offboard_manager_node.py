@@ -22,7 +22,7 @@ from asl_rover_offboard.utils.vehicle_command_utils import (
 )
 from asl_rover_offboard.utils.param_loader import ParamLoader
 
-
+from hydro_mpc.utils.helper_functions import quat_to_eul
 
 
 # ----------------------- Offboard Manager Node -----------------------
@@ -43,6 +43,13 @@ class OffboardManagerNode(Node):
         self.declare_parameter('disarm_on_trip', False)
         self.declare_parameter('auto_reenter_after_trip', False)  # (default: NO auto re-entry)
         self.declare_parameter('sys_id', 1)
+        self.declare_parameter('respect_manual_modes', True)                       # NEW
+        self.declare_parameter('manual_release_sec', 0.0)
+
+        # ---- Priming controls (so PX4 accepts OFFBOARD cleanly) ----
+        self.declare_parameter('prime_service', 'prime_offboard')         # service offered by trajectory publisher
+        self.declare_parameter('prime_before_offboard_ms', 1800)           # how long it will stream in MANUAL
+        self.declare_parameter('prime_cooldown_s', 2.0)
 
         package_dir = get_package_share_directory('asl_rover_offboard')
 
@@ -51,6 +58,12 @@ class OffboardManagerNode(Node):
         self.disarm_on_trip = bool(self.get_parameter('disarm_on_trip').get_parameter_value().bool_value)
         self.auto_reenter_after_trip = bool(self.get_parameter('auto_reenter_after_trip').get_parameter_value().bool_value)
         self.sys_id = int(self.get_parameter('sys_id').get_parameter_value().integer_value)
+        self.respect_manual = bool(self.get_parameter('respect_manual_modes').get_parameter_value().bool_value)  # NEW
+        self.manual_release_sec = float(self.get_parameter('manual_release_sec').get_parameter_value().double_value)  # NEW
+
+        self._prime_srv_name = self.get_parameter('prime_service').get_parameter_value().string_value
+        self._prime_before_offboard_ms = int(self.get_parameter('prime_before_offboard_ms').get_parameter_value().integer_value)
+        self._prime_cooldown_s = float(self.get_parameter('prime_cooldown_s').get_parameter_value().double_value)
 
         sitl_yaml_path = os.path.join(package_dir, 'config', 'sitl', sitl_param_file)
         vehicle_yaml_path = os.path.join(package_dir, 'config', 'vehicle_parameters', vehicle_param_file)
@@ -66,18 +79,20 @@ class OffboardManagerNode(Node):
         control_cmd_topic = sitl_yaml.get_topic("control_command_topic")
         offboard_control_topic = sitl_yaml.get_topic("offboard_control_topic")
 
-
-        # pubs
-        self.cmd_pub = self.create_publisher(VehicleCommand, vehicle_command_topic, 10)
-        self.offboard_ctrl_pub = self.create_publisher(OffboardControlMode, offboard_control_topic, 10)
-
-        # subs
+        # QOS profiles
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
+
+        # pubs
+        self.cmd_pub = self.create_publisher(VehicleCommand, vehicle_command_topic, qos)
+        self.offboard_ctrl_pub = self.create_publisher(OffboardControlMode, offboard_control_topic, qos)
+
+        # subs
+
         self.create_subscription(VehicleOdometry, odom_topic, self._odom_cb, qos)
         self.create_subscription(Float32MultiArray, control_cmd_topic, self._cmd_cb, 10)
         self.create_subscription(VehicleStatus, status_topic, self._on_status, qos)
@@ -87,6 +102,8 @@ class OffboardManagerNode(Node):
         self.srv_enable = self.create_service(SetBool, 'offboard_manager/enable_offboard', self._srv_enable_offboard)
         self.srv_clear  = self.create_service(Trigger, 'offboard_manager/clear_trip', self._srv_clear_trip)
 
+        self._prime_client = self.create_client(Trigger, self._prime_srv_name)
+        self._last_prime_call_s = -1.0
 
         # state
         self.t0 = None
@@ -101,6 +118,14 @@ class OffboardManagerNode(Node):
 
         self.have_odom = False
         self.last_cmd: np.ndarray | None = None
+
+        # offboard publisher states
+        self._last_ts_setpoint_s = -1.0
+        self._setpoint_max_age_s = 0.25
+
+        self._ts_count_since_arm = 0
+        self._prev_armed = False
+        self._armed_since_s = None
 
         # control flags
         self.offboard_set = False
@@ -117,6 +142,9 @@ class OffboardManagerNode(Node):
         self.trip_latched = False         # set True on failsafe trip
         self.offboard_blocked = False     # global disable (also set on trip)
 
+        # Manual control request states
+        self.in_manual_mode = False            
+        self._manual_since_s: float | None = None
 
         self.get_logger().info(f"OffboardManagerNode initialized with sys_id={self.sys_id}")
 
@@ -147,6 +175,33 @@ class OffboardManagerNode(Node):
         self.get_logger().info(res.message)
         return res
     
+    def _prime_setpoints(self):
+        """Ask the trajectory publisher to stream TrajectorySetpoint briefly even in MANUAL."""
+        now_s = self._now_s()
+        if (self._last_prime_call_s >= 0.0) and ((now_s - self._last_prime_call_s) < self._prime_cooldown_s):
+            return  # respect cooldown
+
+        if not self._prime_client.service_is_ready():
+            # Don't block long; this runs in a timer callback.
+            self._prime_client.wait_for_service(timeout_sec=0.1)
+
+        try:
+            fut = self._prime_client.call_async(Trigger.Request())
+            # Log completion result asynchronously
+            def _done_cb(f):
+                try:
+                    resp = f.result()
+                    if resp.success:
+                        self.get_logger().info(f"Priming setpoints via '{self._prime_srv_name}' for ~{self._prime_before_offboard_ms} ms")
+                    else:
+                        self.get_logger().warn(f"Prime service responded but not successful: {resp.message}")
+                except Exception as e:
+                    self.get_logger().warn(f"Prime service call failed: {e}")
+            fut.add_done_callback(_done_cb)
+            self._last_prime_call_s = now_s
+        except Exception as e:
+            self.get_logger().warn(f"Prime service call exception: {e}")
+    
     # ---------- callbacks ----------
     def _on_status(self, msg: VehicleStatus):
         try:
@@ -156,6 +211,22 @@ class OffboardManagerNode(Node):
             OFFBOARD, ARMED = 14, 2  # fallback (PX4 typical values)
         self.nav_offboard = (msg.nav_state == OFFBOARD)
         self.armed = (msg.arming_state == ARMED)
+
+        # detect arming transition to start counting TS after ARM
+        if self.armed and not self._prev_armed:
+            self._ts_count_since_arm = 0
+            self._armed_since_s = self._now_s()
+            self.get_logger().info("ARMED: starting TrajectorySetpoint count (need 10).")
+        self._prev_armed = self.armed
+
+        # detect pilot manual modes (POSCTL/ALTCTL/etc.)
+        was_manual = self.in_manual_mode
+        self.in_manual_mode = self._is_manual_nav(msg.nav_state) if self.respect_manual else False
+        if self.in_manual_mode and not was_manual:
+            self._manual_since_s = self._now_s()
+            self.get_logger().warn("Manual mode detected → pausing Offboard keepalive/requests.")
+        elif (not self.in_manual_mode) and was_manual:
+            self.get_logger().info("Left manual mode.")
 
     def _on_ack(self, ack: VehicleCommandAck):
         # Map enum in a tolerant way
@@ -180,10 +251,12 @@ class OffboardManagerNode(Node):
 
         self.last_ack_ok = ok
         if ok:
-            self.get_logger().info(f"ACK OK for cmd {cmd}")
+            if cmd == VehicleCommand.VEHICLE_CMD_DO_SET_MODE:
+                self.get_logger().info("ACK OK: DO_SET_MODE accepted")
+            elif cmd == VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM:
+                self.get_logger().info("ACK OK: ARM/DISARM accepted")
         else:
-            self.get_logger().warn(f"ACK result {ack.result} for cmd {cmd} (param1={ack.result_param1})")
-
+            self.get_logger().warn(f"ACK result not accepted: {ack.result} for cmd {cmd} (param1={ack.result_param1})")
 
     def _odom_cb(self, msg: VehicleOdometry):
         self.px4_timestamp_us = msg.timestamp
@@ -191,7 +264,7 @@ class OffboardManagerNode(Node):
         self.pos = np.array(msg.position, dtype=float)
         self.vel = np.array(msg.velocity, dtype=float)
         self.q = np.array([msg.q[0], msg.q[1], msg.q[2], msg.q[3]], dtype=float)  # w,x,y,z
-        self.rpy = self._quat_to_eul(self.q)
+        self.rpy = quat_to_eul(self.q)
         self.omega_body = np.array(msg.angular_velocity, dtype=float)
 
         if not self.have_odom:
@@ -202,6 +275,14 @@ class OffboardManagerNode(Node):
     def _cmd_cb(self, msg: Float32MultiArray):
         self.last_cmd = np.asarray(msg.data, dtype=float)
 
+        now = self._now_s()
+        self._last_ts_setpoint_s = now
+        # count only after we are ARMED
+        if self.armed:
+            self._ts_count_since_arm += 1
+            if self._ts_count_since_arm in (1, 5, 10):
+                self.get_logger().info(f"TS after ARM: {self._ts_count_since_arm}/10")
+
 
     
 
@@ -209,41 +290,81 @@ class OffboardManagerNode(Node):
     # ---------- timers ----------
     def _publish_offboard_keepalive(self):
 
+
+        # Only publish keepalive when Offboard is allowed AND not in manual
+        allow_keepalive = (not self.offboard_blocked) and (not self.trip_latched) and self.have_odom# and (not self.in_manual_mode)
+
         # Always safe to publish keepalive (it does not switch modes by itself)       
-        now_us = self._now_us()
-        offboard = OffboardControlMode()
-        offboard.timestamp = now_us
-        offboard.position = False
-        offboard.velocity = False
-        offboard.acceleration = False
-        offboard.attitude = False
-        offboard.body_rate = False
-        offboard.thrust_and_torque = False
-        offboard.direct_actuator = True
-        self.offboard_ctrl_pub.publish(offboard)
+        if allow_keepalive:
+            now_us = self._now_us()
+            offboard = OffboardControlMode()
+            offboard.timestamp = now_us
+            offboard.position = False
+            offboard.velocity = False
+            offboard.acceleration = False
+            offboard.attitude = False
+            offboard.body_rate = False
+            offboard.thrust_and_torque = False
+            offboard.direct_actuator = True
+            self.offboard_ctrl_pub.publish(offboard)
 
         # 2) Decide whether we want Offboard/Arm active
         want_control = (not self.offboard_blocked) and (not self.trip_latched) and self.have_odom 
 
+        if want_control:
+            fresh = (self._now_s() - self._last_ts_setpoint_s) <= self._setpoint_max_age_s
+            
+            # If we don't yet have fresh setpoints, ask trajectory node to prime (in MANUAL) briefly.
+            # Also helpful even when 'fresh' is True, just before arming/offboard, so PX4 sees a stream.
+            # self._prime_setpoints()
+            
+            if not fresh:
+                # don't try OFFBOARD yet; keep streaming OffboardControlMode until traj arrives
+                return
+        
+        # Respect manual modes by short-circuiting desire to control
+        if self.in_manual_mode and self.respect_manual:
+            self.offboard_set = False
+            return
+        
+        # Optional dwell after leaving manual before auto re-entering
+        if (not self.in_manual_mode) and (self._manual_since_s is not None) and (self.manual_release_sec > 0.0):
+            if (self._now_s() - self._manual_since_s) < self.manual_release_sec:
+                return
+            self._manual_since_s = None
+        
         if not want_control:
             self.offboard_set = False
             return
     
-        # 3) Stage OFFBOARD first, then ARM (with ACK + status verification)
-        if not self.nav_offboard and self._pending["offboard"] is None:
-            self._request_offboard_mode()
-
-        # Retry OFFBOARD if needed
-        self._maybe_retry("offboard")
-
-        # Once OFFBOARD is active, request ARM (if not yet armed)
-        if self.nav_offboard and (not self.armed) and self._pending["arm"] is None:
+        # 3) Stage ARM first, then OFFBOARD (with ACK + status verification)
+        # (A) Request ARM if not armed (respect gating above: odom present, setpoint fresh, not manual)
+        if (not self.armed) and (self._pending["arm"] is None):
+            # Ensure setpoints are streaming during MANUAL right before we begin the ARM→OFFBOARD sequence
+            self._prime_setpoints()
+            self.get_logger().info("First arm requested")
             self._request_arm(True)
 
         # Retry ARM if needed
         self._maybe_retry("arm")
 
-        # 4) Consider the switch successful only when BOTH are true
+        # (B) Once ARMED and we have seen >=10 TrajectorySetpoints, request OFFBOARD
+        ready_for_offboard = (
+            self.armed
+            and (self._ts_count_since_arm >= 10)
+            and (self._now_s() - self._last_ts_setpoint_s) <= self._setpoint_max_age_s  # still fresh
+        )
+
+        
+        if ready_for_offboard and (not self.nav_offboard) and (self._pending["offboard"] is None):
+            self.get_logger().info("Condition met: >=10 TS since ARM → requesting OFFBOARD.")
+            self._request_offboard_mode()
+
+
+        # Retry OFFBOARD if needed
+        self._maybe_retry("offboard")
+
+        # 4) Success when BOTH are true
         self.offboard_set = self.nav_offboard and self.armed
         
 
@@ -316,13 +437,20 @@ class OffboardManagerNode(Node):
                 self.get_logger().warn("Retrying ARM request…")
                 self._request_arm(True)
 
-    @staticmethod
-    def _quat_to_eul(q_wxyz: np.ndarray) -> np.ndarray:
-        # PX4 gives [w, x, y, z]
-        from scipy.spatial.transform import Rotation as R
-        r = R.from_quat([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
-        return r.as_euler('ZYX', degrees=False)  # [yaw, pitch, roll]
     
+    def _is_manual_nav(self, nav_state: int) -> bool:                           
+        VS = VehicleStatus
+        # PX4 "pilot" modes; extend if you use others
+        manual_modes = (
+            getattr(VS, "NAVIGATION_STATE_MANUAL", 0),
+            getattr(VS, "NAVIGATION_STATE_ALTCTL", 0),
+            getattr(VS, "NAVIGATION_STATE_POSCTL", 0),
+            getattr(VS, "NAVIGATION_STATE_ACRO", 0),
+            getattr(VS, "NAVIGATION_STATE_RATTITUDE", 0),
+            getattr(VS, "NAVIGATION_STATE_STAB", 0),
+        )
+
+        return nav_state in manual_modes
     
 
 def main(args=None):

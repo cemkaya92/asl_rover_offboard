@@ -6,6 +6,34 @@ from asl_rover_offboard.utils.param_types import (
     Common, StartPose
 )
 
+
+def _to_f(x, name):
+    if x is None: return None
+    if isinstance(x, (int, float)): return float(x)
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in ("", "none", "null", "nan"): return None
+        return float(s)
+    raise ValueError(f"Mission YAML: '{name}' must be a number or null, got {type(x).__name__}")
+
+
+def _to_cw(val, omega=None):
+    # prefer explicit boolean or "cw"/"ccw" string; fall back to omega sign
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("cw", "clockwise"): return True
+        if s in ("ccw", "counterclockwise", "anti-clockwise", "anticlockwise"): return False
+    if isinstance(val, (int, float)):
+        # 1 → cw, 0/negative → ccw (if someone used 1/0/-1)
+        return float(val) > 0.0
+    if omega is not None:
+        return float(omega) < 0.0
+    # default to cw if nothing else is given
+    return True
+
+
 class ParamLoader:
     def __init__(self, yaml_path):
         self.yaml_path = yaml_path
@@ -138,11 +166,12 @@ class ParamLoader:
             return Straight(common=c, segment_distance=float(params.get("segment_distance", 0.0)))
 
         if mtype == "arc":
-            ang = params.get("angle"); ang = None if ang is None else float(ang)
-            yr  = params.get("yaw_rate"); yr = None if yr is None else float(yr)
-            if ang is None and yr is None:
-                raise ValueError("arc mission: provide one of {angle, yaw_rate}")
-            return Arc(common=c, radius=float(params["radius"]), angle=ang, yaw_rate=yr,
+            ang = _to_f(params.get("angle"), name="angle")
+            yr  = _to_f(params.get("yaw_rate"), name="yaw_rate")
+            R   = _to_f(params.get("radius"), name="radius")
+            if ang is None and yr is None and R is None:
+                raise ValueError("arc mission: provide one of {angle, yaw_rate, radius}")
+            return Arc(common=c, radius=R, angle=ang, yaw_rate=yr,
                        cw=bool(params.get("cw", True)))
 
         if mtype == "rounded_rectangle":
@@ -159,7 +188,19 @@ class ParamLoader:
 
         raise ValueError(f"Unknown mission type: {mtype}")
 
-
+    def validate_mission(self) -> tuple[bool, str]:
+        """
+        Try parsing the mission; return (ok, message).
+        Keeps get_full_config() unchanged — just a fast preflight check.
+        """
+        try:
+            m = self.get_mission()
+            # optional guardrails:
+            if (m.common.speed is not None) and (m.common.speed < 0):
+                return False, "common.speed must be >= 0"
+            return True, f"OK ({type(m).__name__})"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
     
     def as_dict(self):
         """Return full parameter dictionary."""

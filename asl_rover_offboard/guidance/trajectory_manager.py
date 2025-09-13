@@ -15,21 +15,34 @@ class TrajectoryManager:
     Handles segment planning (min-jerk), loiter reference, and publishing.
     Does NOT decide states — only provides references / planning.
     """
-    def __init__(self, v_max: float, omega_max: float, default_T: float):
-        self.gen = TrajectoryGenerator(v_max=v_max, omega_max=omega_max)
-        self.default_T = float(default_T)
+    def __init__(
+        self, 
+        v_max: float, 
+        omega_max: float, 
+        default_T: float
+    ):
+        self.gen = TrajectoryGenerator(
+            v_max=v_max, 
+            omega_max=omega_max
+        )
 
+        self.default_T = float(default_T)
         self.plan_active = False
         self._plan_start_time = 0.0
-
         self._plan_type: str | None = None
         self._plan_meta: dict = {}   # stash params needed to reconstruct
 
 
     # ---------- planning ----------
-    def plan_min_jerk(self, t_now: float, p0: np.ndarray, v0: np.ndarray,
-                    p1: np.ndarray, v1: np.ndarray, T: float | None = None,
-                    repeat: str = "none") -> None:
+    def plan_min_jerk(
+        self, 
+        t_now: float, 
+        p0: np.ndarray, 
+        v0: np.ndarray,
+        p1: np.ndarray, 
+        v1: np.ndarray, 
+        T: float | None = None,
+        repeat: str = "none") -> None:
         p0 = np.asarray(p0,float).reshape(3,)
         v0 = np.asarray(v0,float).reshape(3,)
         p1 = np.asarray(p1,float).reshape(3,)
