@@ -37,7 +37,7 @@ def generate_launch_description():
         description='Serial port for Lidar'
     )
     lidar_baud_arg = DeclareLaunchArgument(
-        'lidar_baud', default_value='115200',
+        'lidar_baud', default_value='1000000',
         description='Serial baud rate for Lidar'
     )
 
@@ -67,7 +67,7 @@ def generate_launch_description():
     sllidar_launch = PathJoinSubstitution([
         FindPackageShare('sllidar_ros2'),
         'launch',
-        'sllidar_a2m8_launch.py'
+        'sllidar_s2_launch.py'
     ])
 
     rover_launch = PathJoinSubstitution([
