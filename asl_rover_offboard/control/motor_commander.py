@@ -7,6 +7,8 @@ import numpy as np
 from std_msgs.msg import Float32MultiArray, UInt8
 from px4_msgs.msg import ActuatorMotors
 
+from asl_rover_offboard.navigation.state_machine import NavState
+
 from asl_rover_offboard.utils.param_loader import ParamLoader
 # from asl_rover_offboard.control.control_allocator import ControlAllocator
 
@@ -48,7 +50,9 @@ class MotorCommander(Node):
         self.max_wheel_speed = self.vehicle_params.max_linear_speed / self.R
         self.max_angular_speed_rad_s = self.vehicle_params.max_angular_speed * np.pi / 180.0 # rad/s
 
-        self.allow_commands = False  # start in IDLE
+        self.allow_commands = False  
+
+        self.nav_state = NavState.IDLE # start in IDLE
 
         # QOS Options
         plan_qos = QoSProfile(
@@ -92,7 +96,22 @@ class MotorCommander(Node):
 
     # ---------- callbacks ----------
     def _on_nav_state(self, msg: UInt8):
-        self.allow_commands = (int(msg.data) == 1) or ((int(msg.data) == 2))   # 1 = IDLE, 2 = MISSION
+        
+        raw = int(msg.data)
+        prev = getattr(self, "nav_state", NavState.UNKNOWN)
+
+        # Normalize to enum
+        try:
+            state = NavState(raw)
+        except ValueError:
+            self.get_logger().warn(f"Unknown nav_state {raw}; treating as UNKNOWN")
+            state = NavState.UNKNOWN
+
+        self.nav_state = state
+
+
+        self.allow_commands = (state in {NavState.IDLE, NavState.MISSION})
+        
         if not self.allow_commands:
             self._set_latest_to_neutral()
             

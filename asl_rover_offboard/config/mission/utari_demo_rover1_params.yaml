@@ -6,7 +6,7 @@
         repeat: "loop"                 # "none" | "loop" | "pingpong"
         # start pose handling: either use current pose or set an absolute start
         start:
-          use_current: true            # if false, use x/y/psi below
+          use_current: false            # if false, use x/y/psi below
           x: 0.0
           y: 0.0
           psi: 0.0

@@ -315,7 +315,7 @@ class ControllerNode(Node):
         ok, _u_mpc, _X_opt, _ = self.mpc.solve(_x0, self.u_prev, xref_h, obs_h, r_safe=1.0)
         #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
 
-        #self.get_logger().info(f"x0= {_x0} | u0= {_u_mpc} | xref= {xref_h}")
+        # self.get_logger().info(f"ok: {ok} | x0= {_x0} | u0= {_u_mpc} | xref= {xref_h} ")
         #_u_mpc = np.array([1.0, 0.0])
 
         self.u_prev = _u_mpc
