@@ -11,45 +11,24 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 namePackage = 'asl_rover_offboard'
 
-vehicle_params_path = PathJoinSubstitution([
-    FindPackageShare(namePackage),
-    'config',
-    'vehicle_parameters',
-    'asl_rover_param.yaml'
-])
-
-sitl_params_path = PathJoinSubstitution([
-    FindPackageShare(namePackage),
-    'config',
-    'sitl',
-    'sitl_params.yaml'
-])
-
-mpc_params_path = PathJoinSubstitution([
-    FindPackageShare(namePackage),
-    'config',
-    'controller',
-    'mpc_controller_asl_rover.yaml'
-])
-
-bridge_params = PathJoinSubstitution([
-    FindPackageShare(namePackage),
-    'config',
-    'sitl',
-    'bridge_parameters.yaml'
-])
-
 
 
 def generate_launch_description():
 
-    ns_rover1  = LaunchConfiguration('ns_rover1')
+    ns_rover  = LaunchConfiguration('ns_rover')
+    sys_id  = LaunchConfiguration('sys_id')
+    lidar_frame_id  = LaunchConfiguration('lidar_frame_id')
+    mission_param_file  = LaunchConfiguration('mission_param_file')
+
 
 
     return LaunchDescription([
 
-        DeclareLaunchArgument('ns_rover1',   default_value='rover1'),
-
+        DeclareLaunchArgument('ns_rover',   default_value='rover1'),
+        DeclareLaunchArgument('sys_id',   default_value='2'),
+        DeclareLaunchArgument('lidar_frame_id',   
+                              default_value='laser'),
+        
         DeclareLaunchArgument(
             'vehicle_param_file',
             default_value='asl_rover_param.yaml',
@@ -70,7 +49,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'mission_param_file',
-            default_value='utari_demo_mission_params.yaml',
+            default_value='utari_demo_rover1_params.yaml',
             description='Mission parameter file inside config/mission/'
         ),
     
@@ -78,13 +57,14 @@ def generate_launch_description():
             package=namePackage,
             executable='offboard_manager_node',
             name='offboard_manager_node',
-            namespace=ns_rover1,
+            namespace=ns_rover,
             output='screen',
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
                 'sitl_param_file': LaunchConfiguration('sitl_param_file'),
                 'disarm_on_trip': False,
-                'auto_reenter_after_trip': False
+                'auto_reenter_after_trip': False,
+                'sys_id': sys_id
             }]
         ),
 
@@ -93,7 +73,7 @@ def generate_launch_description():
             executable='navigator_node',
             name='navigator_node',
             output='screen',
-            namespace=ns_rover1,
+            namespace=ns_rover,
             parameters=[{
                 'sitl_param_file': LaunchConfiguration('sitl_param_file'),
                 'mission_param_file': LaunchConfiguration('mission_param_file'),
@@ -106,7 +86,7 @@ def generate_launch_description():
             package=namePackage,
             executable='motor_commander',
             name='motor_commander',
-            namespace=ns_rover1,
+            namespace=ns_rover,
             output='screen',
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
@@ -118,7 +98,7 @@ def generate_launch_description():
             package=namePackage,
             executable='mpc_controller',
             name='mpc_controller',
-            namespace=ns_rover1,
+            namespace=ns_rover,
             output='screen',
             parameters=[{
                 'vehicle_param_file': LaunchConfiguration('vehicle_param_file'),
@@ -133,7 +113,7 @@ def generate_launch_description():
             package=namePackage,
             executable='laser_scan_sector_filter',
             name='laser_scan_sector_filter',
-            namespace=ns_rover1,
+            namespace=ns_rover,
             output='screen',
             parameters=[{
                 'input_topic': '/rover1/merged_scan',
@@ -144,16 +124,14 @@ def generate_launch_description():
             }]
         ),
 
-        
-
         Node(
             package='obstacle_detector',          # use the actual package you installed
             executable='obstacle_extractor_node',        # or 'obstacle_extractor_node' if that’s the exec name
             name='obstacle_extractor_node',
             output='screen',
             remappings=[
-                ('scan', '/rover1/scan_filtered'),
-                ('pcl',  '/rover1/scan_filtered'),
+                ('scan', [ns_rover,'/scan_filtered']),
+                ('pcl',  [ns_rover,'/scan_filtered']),
             ],
             parameters=[{
                 'active': True,
@@ -179,8 +157,8 @@ def generate_launch_description():
                 # and you mean to transform into it. base_link is safer here.
                 'frame_id': 'map',
 
-                'obstacle_pub_topic': '/rover1/obstacles/raw',
-                'obstacle_visual_pub_topic': '/rover1/obstacles/raw_visualization',
+                'obstacle_pub_topic': [ns_rover,'/obstacles/raw'],
+                'obstacle_visual_pub_topic': [ns_rover,'/obstacles/raw_visualization'],
             }]
         ), 
 
@@ -196,7 +174,6 @@ def generate_launch_description():
             ],
             parameters=[{
                 'active': True,
-                'compensate_robot_velocity': False,
 
                 'loop_rate': 100.0,
                 'tracking_duration': 0.5,
@@ -210,19 +187,19 @@ def generate_launch_description():
                 # and you mean to transform into it. base_link is safer here.
                 'frame_id': 'map',
 
-                'obstacle_sub_topic': '/rover1/obstacles/raw',
-                'obstacle_pub_topic': '/rover1/obstacles/tracked',
-                'obstacle_visual_pub_topic': '/rover1/obstacles/tracked_visualization',
+                'obstacle_sub_topic': [ns_rover,'/obstacles/raw'],
+                'obstacle_pub_topic': [ns_rover,'/obstacles/tracked'],
+                'obstacle_visual_pub_topic': [ns_rover,'/obstacles/tracked_visualization'],
             }]
         ),
 
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            namespace=ns_rover1,
+            namespace=ns_rover,
             arguments=[
-                '0.0', '0', '0.0', '0', '0', '0',
-                'map', 'laser'
+                '0.0', '0', '0.0', '0', '3.14159', '0',
+                'map', lidar_frame_id
             ],
             output='screen'
         )

@@ -12,6 +12,8 @@ from launch_ros.substitutions import FindPackageShare
 PROBE_READY_MARKER = 'Telemetry received AND command subscribers discovered.'
 XRCE_READY_MARKER = 'participant created'   # seen in Agent logs
 
+namePackage = 'asl_rover_offboard'
+
 def generate_launch_description():
 
     init_flag = SetLaunchConfiguration('stack_started', '0')
@@ -53,7 +55,7 @@ def generate_launch_description():
 
     # Deep readiness probe: confirms PX4 pubs/subs & first msgs
     px4_probe = Node(
-        package='asl_rover_offboard',
+        package=namePackage,
         executable='wait_px4_ready',
         name='wait_px4_ready',
         # pass just the raw ns name, not '/ns'
@@ -69,7 +71,7 @@ def generate_launch_description():
     ])
 
     rover_launch = PathJoinSubstitution([
-        FindPackageShare('asl_rover_offboard'),
+        FindPackageShare(namePackage),
         'launch',
         'asl_rover_offboard_hardware.launch.py'
     ])
