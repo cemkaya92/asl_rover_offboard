@@ -22,7 +22,7 @@ from asl_rover_offboard.utils.vehicle_command_utils import (
 )
 from asl_rover_offboard.utils.param_loader import ParamLoader
 
-from hydro_mpc.utils.helper_functions import quat_to_eul
+from asl_rover_offboard.utils.helper_functions import quat_to_eul
 
 
 # ----------------------- Offboard Manager Node -----------------------
