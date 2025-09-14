@@ -316,8 +316,9 @@ class ControllerNode(Node):
         #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
 
         # self.get_logger().info(f"ok: {ok} | x0= {_x0} | u0= {_u_mpc} | xref= {xref_h} ")
-        #_u_mpc = np.array([1.0, 0.0])
-
+        # _u_mpc = np.array([1.0, 0.0])
+        self.get_logger().info(f"obs center: {obs_h} ")
+      
         self.u_prev = _u_mpc
 
         #X_opt = xref_h

@@ -74,6 +74,8 @@ class MotorCommander(Node):
         self.latest_motor_cmd = ActuatorMotors()
         self.latest_motor_cmd.control = [self.vehicle_params.zero_position_armed, 
                                          self.vehicle_params.zero_position_armed] + [0.0] * 10
+        
+        self.latest_motor_cmd.reversible_flags = 3
 
         # a ready-to-send neutral msg
         self._neutral_msg = ActuatorMotors()
@@ -134,25 +136,35 @@ class MotorCommander(Node):
 
         v_cmd =  np.clip(msg.data[0], -self.vehicle_params.max_linear_speed, self.vehicle_params.max_linear_speed)
         omega_cmd =  np.clip(msg.data[1], -self.max_angular_speed_rad_s, self.max_angular_speed_rad_s) # 25.0*np.pi/180.0 #
-        omega_scaled = omega_cmd*(3.0 - 2.0 * np.abs(v_cmd)/self.vehicle_params.max_linear_speed)
+#        omega_scaled = omega_cmd*(3.0 - 2.0 * np.abs(v_cmd)/self.vehicle_params.max_linear_speed)
         #self.get_logger().info(f"V= {v_cmd} | Omega= {omega_cmd} | OmegaScaled= {omega_scaled}")
 
-        wl_cmd = (v_cmd - omega_scaled * self.L) / self.R
-        wr_cmd = (v_cmd + omega_scaled * self.L) / self.R
+        wl_cmd = (v_cmd - 0.5 * omega_cmd * self.L) / self.R
+        wr_cmd = (v_cmd + 0.5 * omega_cmd * self.L) / self.R
 
 
         # Prepare thrust message
         self.latest_motor_cmd.timestamp = now_us
-        self.latest_motor_cmd.control[0] = self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
-        self.latest_motor_cmd.control[1] = self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
+        # forward speed works between [0.5 .. 1] range
+        # backward speed works between [-1.0 .. -0.5] range
+        if (wl_cmd>0.0):
+            self.latest_motor_cmd.control[0] = self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
+        else:
+            self.latest_motor_cmd.control[0] = -self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
 
-        #self.get_logger().info(f"wl_cmd= {wl_cmd} | wr_cmd= {wr_cmd} | max_wheel_speed= {self.max_wheel_speed}")
-        #self.get_logger().info(f"norm_omega_left= {self.latest_motor_cmd.control[0]} | norm_omega_right= {self.latest_motor_cmd.control[1]}")
+        if (wr_cmd>0.0):
+            self.latest_motor_cmd.control[1] = self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
+        else:
+            self.latest_motor_cmd.control[1] = -self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
+
+
+        # self.get_logger().info(f"wl_cmd= {wl_cmd} | wr_cmd= {wr_cmd} | max_wheel_speed= {self.max_wheel_speed}")
+        # self.get_logger().info(f"norm_omega_left= {self.latest_motor_cmd.control[0]} | norm_omega_right= {self.latest_motor_cmd.control[1]}")
 
 
     # ---------- neutral helpers ----------
     def _set_latest_to_neutral(self):
-        z = float(self.vehicle_params.zero_position_armed)
+        z = float(0.0*self.vehicle_params.zero_position_armed)
         self.latest_motor_cmd.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.latest_motor_cmd.control[0] = z
         self.latest_motor_cmd.control[1] = z

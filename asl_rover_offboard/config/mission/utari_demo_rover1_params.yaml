@@ -6,11 +6,11 @@
         repeat: "loop"                 # "none" | "loop" | "pingpong"
         # start pose handling: either use current pose or set an absolute start
         start:
-          use_current: false            # if false, use x/y/psi below
+          use_current: true            # if false, use x/y/psi below
           x: 0.0
           y: 0.0
           psi: 0.0
-        speed: 0.5                     # common cruise speed (ignored for some types)
+        speed: 1.0                     # common cruise speed (ignored for some types)
       params:
         # For line_to:
         # goal_xypsi: [6.0, 0.5, 0.0]

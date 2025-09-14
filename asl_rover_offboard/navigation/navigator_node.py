@@ -71,7 +71,7 @@ class NavigatorNode(Node):
 
         # ------- components -------
         self.sm = NavStateMachine()
-        self.tm = TrajectoryManager(v_max= 1.0, omega_max=1.0, default_T=10000.0)
+        self.tm = TrajectoryManager(v_max= 2.0, omega_max=1.0, default_T=10000.0)
 
 
         # ------- state -------
