@@ -188,7 +188,7 @@ class TrajectoryGenerator:
 
         # Build closures for each segment, tracking start pose and duration
         seg_funcs: List[Tuple[float, callable]] = []
-        xk, yk, psik = p0.tolist(), p0.tolist(), p0.tolist()  # not used; just a scratch note
+        # xk, yk, psik = p0.tolist(), p0.tolist(), p0.tolist()  # not used; just a scratch note
         xk, yk, psik = p0[0], p0[1], p0[2]
 
         for seg in segments:
