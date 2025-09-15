@@ -28,7 +28,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'vehicle_param_file',
-            default_value='asl_rover_param.yaml',
+            default_value='asl_rover_sitl_param.yaml',
             description='Vehicle param file inside config/vehicle_parameters/'
         ),
 
@@ -200,6 +200,17 @@ def generate_launch_description():
                 'map', lidar_frame_id
             ],
             output='screen'
+        ),
+
+        Node(
+            package=namePackage,
+            executable='trajectory_visualizer',
+            namespace=ns_rover,
+            output='screen',
+            parameters=[{
+                'sitl_param_file': LaunchConfiguration('sitl_param_file'),
+                'world_frame': 'map'
+            }]
         )
 
     ])

@@ -37,6 +37,7 @@ setup(
             'wait_px4_ready = asl_rover_offboard.utils.wait_px4_ready:main',
             'offboard_manager_node = asl_rover_offboard.utils.offboard_manager_node:main',
             'navigator_node = asl_rover_offboard.navigation.navigator_node:main',
+            'trajectory_visualizer = asl_rover_offboard.utils.trajectory_visualizer:main',
         ],
     },
 )

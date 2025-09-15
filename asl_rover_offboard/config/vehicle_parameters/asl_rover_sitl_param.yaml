@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    vehicle_parameters:
+      mass: 2.5                    # kg
+      base_width: 0.5588            # m
+      wheel_radius: 0.06           # m
+      inertia:                     # Kg.m^2
+        x: 0.0073
+        y: 0.02725
+        z: 0.033
+      moment_constant: 0.0112      # m
+      thrust_constant: 1.1e-05  # N.s^2/rad^2
+      max_linear_speed: 2.3            # m/s
+      max_angular_speed: 100.0            # deg/s
+      omega_to_pwm_coefficient:
+        x_2: 0.001142
+        x_1: 0.2273
+        x_0: 914.2
+      PWM_MIN: 1075
+      PWM_MAX: 1950
+      input_scaling: 1000.0
+      zero_position_armed: 0.5    # mapped between [-1, 1] where 0.0 is stop -1 is reverse max and 1 is forward max

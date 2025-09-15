@@ -244,9 +244,11 @@ class ControllerNode(Node):
             # Pick the nearest obstacle to the current robot position
             dists = [np.linalg.norm(o['center'] - self.pos[:2]) for o in obs_list]
             i = int(np.argmin(dists))
-            self.obs_center = obs_list[i]['center']
-            self.obs_radius = obs_list[i]['radius']
-            # self.get_logger().debug(f"Nearest obstacle @ {self.obs_center}, r={self.obs_radius:.2f}")
+
+            if dists[i] < 5.0:
+                self.obs_center = obs_list[i]['center']
+                self.obs_radius = obs_list[i]['radius']
+                self.get_logger().info(f"Nearest obstacle @ {self.obs_center}, r={self.obs_radius:.2f}")
         else:
             self.obs_center = None
             self.obs_radius = None
@@ -312,12 +314,12 @@ class ControllerNode(Node):
             return
         
         xref_h, obs_h = self._build_horizon(_x0)
-        ok, _u_mpc, _X_opt, _ = self.mpc.solve(_x0, self.u_prev, xref_h, obs_h, r_safe=1.0)
+        ok, _u_mpc, _X_opt, _ = self.mpc.solve(_x0, self.u_prev, xref_h, obs_h, r_safe=1.5)
         #ok, u0, _, _ = self.mpc.solve(x0, xref_h, obs_h, r_safe=2.0)
 
         # self.get_logger().info(f"ok: {ok} | x0= {_x0} | u0= {_u_mpc} | xref= {xref_h} ")
         # _u_mpc = np.array([1.0, 0.0])
-        self.get_logger().info(f"obs center: {obs_h} ")
+        # self.get_logger().info(f"obs center: {obs_h} ")
       
         self.u_prev = _u_mpc
 
@@ -435,22 +437,14 @@ class ControllerNode(Node):
             out = self._eval_plan_abs(tk_abs)
             if out[0] is None:
                 # no plan yet → hold
-                pos_ref = self.pos.copy()
+                pos_ref = np.array([self.pos[0], self.pos[1], self.rpy[2]])
                 vel_ref = np.zeros(3)
             else:
                 pos_ref, vel_ref, _ = out
 
-            vx, vy = vel_ref[0], vel_ref[1]
-            # heading from velocity; hold previous if almost stopped
-            if vx*vx + vy*vy > v_eps*v_eps:
-                psi_ref = np.arctan2(vy, vx)
-                psi_prev = psi_ref
-            else:
-                psi_ref = psi_prev
-
             xs.append(pos_ref[0])
             ys.append(pos_ref[1])
-            psis_raw.append(psi_ref)
+            psis_raw.append(pos_ref[2])
 
         
         # unwrap relative to current yaw so it's continuous across ±π
@@ -577,7 +571,7 @@ class ControllerNode(Node):
         """
         segs: list of tuples
         - ("straight", L, 0.0)
-        - ("arc",      r, theta)  # theta signed; >0 CCW, <0 CW
+        - ("arc",      r, theta)  # theta signed; >0 CW, <0 CCW
         Constant speed v (>0 assumed along forward heading).
         """
         if abs(v) < 1e-9:

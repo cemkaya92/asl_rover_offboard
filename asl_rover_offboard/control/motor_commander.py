@@ -54,6 +54,8 @@ class MotorCommander(Node):
 
         self.nav_state = NavState.IDLE # start in IDLE
 
+        self.in_SITL = False
+
         # QOS Options
         plan_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -147,16 +149,24 @@ class MotorCommander(Node):
         self.latest_motor_cmd.timestamp = now_us
         # forward speed works between [0.5 .. 1] range
         # backward speed works between [-1.0 .. -0.5] range
-        if (wl_cmd>0.0):
-            self.latest_motor_cmd.control[0] = self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
-        else:
-            self.latest_motor_cmd.control[0] = -self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
 
-        if (wr_cmd>0.0):
+        if (self.in_SITL):
+            self.latest_motor_cmd.reversible_flags = 0
+            self.latest_motor_cmd.control[0] = self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
             self.latest_motor_cmd.control[1] = self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
         else:
-            self.latest_motor_cmd.control[1] = -self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
 
+            if (wl_cmd>0.0):
+                self.latest_motor_cmd.control[0] = self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
+            else:
+                self.latest_motor_cmd.control[0] = -self.vehicle_params.zero_position_armed + ( wl_cmd / self.max_wheel_speed ) / 2.0
+
+            if (wr_cmd>0.0):
+                self.latest_motor_cmd.control[1] = self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
+            else:
+                self.latest_motor_cmd.control[1] = -self.vehicle_params.zero_position_armed + ( wr_cmd / self.max_wheel_speed ) / 2.0
+
+        # 
 
         # self.get_logger().info(f"wl_cmd= {wl_cmd} | wr_cmd= {wr_cmd} | max_wheel_speed= {self.max_wheel_speed}")
         # self.get_logger().info(f"norm_omega_left= {self.latest_motor_cmd.control[0]} | norm_omega_right= {self.latest_motor_cmd.control[1]}")
